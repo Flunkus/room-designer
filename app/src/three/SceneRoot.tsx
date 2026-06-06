@@ -4,7 +4,7 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import * as THREE from "three";
 import { useStore } from "../state/store";
-import { bounds, centroid } from "../domain/geometry";
+import { bounds } from "../domain/geometry";
 import { M } from "./coords";
 import { Floor } from "./Floor";
 import { Walls } from "./Walls";
@@ -25,7 +25,7 @@ function fitCamera(
 ) {
   if (polygon.length < 3 || !controls) return;
   const b = bounds(polygon);
-  const c = centroid(polygon);
+  const cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
   const widthW = (b.maxX - b.minX) * M;
   const depthW = (b.maxY - b.minY) * M;
   const heightW = wallHeightCm * M;
@@ -34,16 +34,18 @@ function fitCamera(
   const az = (-28 * Math.PI) / 180;
   const el = (32 * Math.PI) / 180;
   const horiz = dist * Math.cos(el);
-  const center = new THREE.Vector3(c.x * M, heightW * 0.45, c.y * M);
+  const center = new THREE.Vector3(cx * M, heightW * 0.45, cy * M);
   camera.position.set(center.x + horiz * Math.sin(az), center.y + dist * Math.sin(el), center.z + horiz * Math.cos(el));
   controls.target.copy(center);
   controls.update();
 }
 
 function CameraRig({ apiRef }: { apiRef: React.MutableRefObject<OrbitApi | null> }) {
-  const room = useStore((s) => s.room);
+  const rooms = useStore((s) => s.rooms);
   const wallHeight = useStore((s) => s.wallHeight);
   const fitTick = useStore((s) => s.fitTick);
+  // combined footprint of every room → frames the whole house
+  const housePts = rooms.flatMap((r) => r.polygon);
   const { camera, controls, scene } = useThree() as unknown as {
     camera: THREE.PerspectiveCamera;
     controls: { target: THREE.Vector3; update: () => void } | null;
@@ -59,9 +61,9 @@ function CameraRig({ apiRef }: { apiRef: React.MutableRefObject<OrbitApi | null>
 
   // (re)fit on mount, room change, and explicit fit requests
   useEffect(() => {
-    fitCamera(camera, controls, room.polygon, wallHeight);
+    fitCamera(camera, controls, housePts, wallHeight);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitTick, room.closed, controls]);
+  }, [fitTick, rooms.length, controls]);
 
   // expose zoom/fit to the HTML overlay
   useEffect(() => {
@@ -75,16 +77,16 @@ function CameraRig({ apiRef }: { apiRef: React.MutableRefObject<OrbitApi | null>
         if (len > 0.6 && len < 80) camera.position.copy(target).add(offset);
         controls.update();
       },
-      fit: () => fitCamera(camera, controls, room.polygon, wallHeight),
+      fit: () => fitCamera(camera, controls, housePts, wallHeight),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controls, room.polygon, wallHeight]);
+  }, [controls, rooms, wallHeight]);
 
   return null;
 }
 
 export function SceneRoot({ bare }: { bare?: boolean }) {
-  const room = useStore((s) => s.room);
+  const rooms = useStore((s) => s.rooms);
   const openings = useStore((s) => s.openings);
   const materials = useStore((s) => s.materials);
   const wallHeight = useStore((s) => s.wallHeight);
@@ -99,7 +101,8 @@ export function SceneRoot({ bare }: { bare?: boolean }) {
   const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#3b82f6";
 
   const apiRef = useRef<OrbitApi | null>(null);
-  const hasRoom = room.closed && room.polygon.length >= 3;
+  const closedRooms = rooms.filter((r) => r.closed && r.polygon.length >= 3);
+  const hasRoom = closedRooms.length > 0;
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg,#eef0f2,#e4e6e9)" }}>
@@ -117,8 +120,12 @@ export function SceneRoot({ bare }: { bare?: boolean }) {
         />
         {hasRoom && (
           <>
-            <Floor polygon={room.polygon} material={materials.floor} />
-            <Walls polygon={room.polygon} openings={openings} wallHeightCm={wallHeight} material={materials.walls} />
+            {closedRooms.map((room) => (
+              <group key={room.id}>
+                <Floor polygon={room.polygon} material={materials.floor} />
+                <Walls polygon={room.polygon} openings={openings.filter((op) => op.roomId === room.id)} wallHeightCm={wallHeight} material={materials.walls} />
+              </group>
+            ))}
             <FurnitureLayer furniture={furniture} selectedId={selectedId} accent={accent} onSelect={select} />
             {showClearance && <ClearanceLayer furniture={furniture} />}
             {showProxy && <HumanProxy proxy={proxy} accent={accent} />}

@@ -1,4 +1,5 @@
 /* ===== Inspector — object + room/materials (ported from prototype panels.jsx) ===== */
+import { useRef, useEffect } from "react";
 import { Icon, TYPE_ICON } from "./Icon";
 import { useStore } from "../state/store";
 import { NumField, Slider, Section, Stat, Toggle, inpStyle } from "./fields";
@@ -83,20 +84,31 @@ function RoomInspector() {
   const tab = s.materialTarget;
   const setTab = s.setMaterialTarget;
   const m = s.materials;
-  const poly = s.room.polygon || [];
-  const hasRoom = s.room.closed && poly.length >= 3;
+  const activeRoom = s.rooms.find((r) => r.id === s.activeRoomId) ?? null;
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  // When a room is freshly created (drawn or added by size), focus its name for instant renaming.
+  useEffect(() => {
+    if (!s.focusRoomName) return;
+    nameRef.current?.focus();
+    nameRef.current?.select();
+    useStore.getState().setFocusRoomName(false);
+  }, [s.focusRoomName]);
+  const poly = activeRoom?.polygon || [];
+  const hasRoom = !!activeRoom && activeRoom.closed && poly.length >= 3;
   const a = (area(poly) / 10000).toFixed(1);   // m²
   const perim = (perimeter(poly) / 100).toFixed(1); // m
   const shape = shapeName(poly);
 
   if (!hasRoom) {
+    const noRooms = s.rooms.length === 0;
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 28, gap: 4 }}>
         <div style={{ width: 52, height: 52, borderRadius: 13, background: "var(--panel-3)", border: "1px solid var(--border-strong)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-2)", marginBottom: 10 }}><Icon name="grid" size={26} /></div>
-        <div style={{ fontSize: 15, fontWeight: 650 }}>No room yet</div>
-        <p style={{ fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.5, margin: "2px 0 16px", maxWidth: 220 }}>Start with a rectangular starter room you can resize, or trace your own walls on the plan.</p>
-        <button className="btn primary" style={{ width: "100%", maxWidth: 220 }} onClick={() => s.starterRoom()}><Icon name="plus" size={15} /> Create starter room</button>
-        <button className="btn" style={{ width: "100%", maxWidth: 220 }} onClick={() => s.startDraw()}><Icon name="pen" size={15} /> Draw walls</button>
+        <div style={{ fontSize: 15, fontWeight: 650 }}>{noRooms ? "No rooms yet" : "Select a room"}</div>
+        <p style={{ fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.5, margin: "2px 0 16px", maxWidth: 220 }}>{noRooms ? "Start with a rectangular starter room you can resize, or trace your own walls on the plan." : "Pick a room from the Objects panel, or add another."}</p>
+        <button className="btn primary" style={{ width: "100%", maxWidth: 220 }} onClick={() => s.openModal("room")}><Icon name="plus" size={15} /> Add room by size</button>
+        <button className="btn" style={{ width: "100%", maxWidth: 220 }} onClick={() => s.startDraw()}><Icon name="pen" size={15} /> {noRooms ? "Draw walls" : "Draw a room"}</button>
       </div>
     );
   }
@@ -104,18 +116,27 @@ function RoomInspector() {
   return (
     <div style={{ height: "100%", overflowY: "auto" }}>
       <div style={{ padding: "16px 16px 14px", borderBottom: "1px solid var(--border)" }}>
-        <input value={s.room.name || ""} onChange={(e) => s.renameRoom(e.target.value)} placeholder="Room name"
-          style={{ width: "100%", border: "none", background: "transparent", font: "inherit", fontSize: 15, fontWeight: 650, color: "var(--text)", outline: "none", padding: 0 }} />
-        <div className="mono" style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>{shape} · Berowra residence</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: -7 }}>
+          <input ref={nameRef} value={activeRoom.name || ""} onChange={(e) => s.renameRoom(activeRoom.id, e.target.value)} placeholder="Room name" title="Click to rename this room"
+            style={{ flex: 1, minWidth: 0, border: "1px solid transparent", borderRadius: 6, background: "transparent", font: "inherit", fontSize: 15, fontWeight: 650, color: "var(--text)", outline: "none", padding: "2px 7px", transition: "background .12s, border-color .12s" }}
+            onFocus={(e) => { e.currentTarget.style.background = "var(--panel-3)"; e.currentTarget.style.borderColor = "var(--border-strong)"; }}
+            onBlur={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "transparent"; }}
+            onMouseEnter={(e) => { if (document.activeElement !== e.currentTarget) e.currentTarget.style.background = "var(--panel-3)"; }}
+            onMouseLeave={(e) => { if (document.activeElement !== e.currentTarget) e.currentTarget.style.background = "transparent"; }} />
+          <button className="icon-btn" style={{ width: 26, height: 26, flexShrink: 0 }} title="Rename room" onClick={() => { nameRef.current?.focus(); nameRef.current?.select(); }}><Icon name="pen" size={13} /></button>
+        </div>
+        <div className="mono" style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2, marginLeft: -1 }}>{shape} · Berowra residence</div>
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <Stat label="Floor area" value={a + " m²"} />
           <Stat label="Perimeter" value={perim + " m"} />
           <Stat label="Wall ht" value={(s.wallHeight / 100).toFixed(2) + " m"} />
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          <button className="btn sm" style={{ flex: 1 }} onClick={() => s.startDraw()}><Icon name="pen" size={14} /> Redraw walls</button>
-          <button className="btn sm" style={{ flex: 1 }} onClick={() => { if (confirm("Start a new, empty room? This clears all furniture.")) s.newRoom(); }}><Icon name="plus" size={14} /> New room</button>
+          <button className="btn sm" style={{ flex: 1 }} onClick={() => s.redrawRoom(activeRoom.id)}><Icon name="pen" size={14} /> Redraw walls</button>
+          <button className="btn sm" style={{ flex: 1 }} onClick={() => s.openModal("room")}><Icon name="plus" size={14} /> Add room</button>
         </div>
+        <button className="btn sm" style={{ width: "100%", marginTop: 8, color: "var(--danger)" }}
+          onClick={() => { if (confirm(`Delete "${activeRoom.name}" and its furniture?`)) s.removeRoom(activeRoom.id); }}><Icon name="trash" size={14} /> Delete room</button>
       </div>
 
       <Section title="Materials">

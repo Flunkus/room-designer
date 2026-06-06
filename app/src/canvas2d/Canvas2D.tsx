@@ -2,7 +2,7 @@
 import { useRef, useState, useEffect, useCallback, type CSSProperties } from "react";
 import { Icon, TYPE_ICON } from "../components/Icon";
 import { useStore } from "../state/store";
-import { bounds, dist, edges, pointInPoly, shade } from "../domain/geometry";
+import { area, bounds, centroid, dist, edges, pointInPoly, shade } from "../domain/geometry";
 import type { GridStyle } from "../components/Tweaks";
 import type { Vec2 } from "../domain/types";
 
@@ -21,7 +21,7 @@ function useSize(ref: React.RefObject<HTMLDivElement | null>) {
 }
 
 type Drag =
-  | { type: "pan" | "pan-bg"; sx: number; sy: number; p0: Vec2; moved?: boolean }
+  | { type: "pan" | "pan-bg"; sx: number; sy: number; p0: Vec2; moved?: boolean; roomId?: string }
   | { type: "move"; id: string; off: Vec2; sx: number; sy: number; started: boolean }
   | { type: "proxy"; off: Vec2 }
   | { type: "rotate"; id: string };
@@ -64,9 +64,14 @@ function snapModular(np: Vec2, moving: Boxish, others: Boxish[]): Vec2 {
 
 const PROXY_HW = 30, PROXY_HD = 20; // 60×40 cm half-extents
 
-/** Resolve the human proxy against furniture footprints + the room boundary so it
+/** True if p falls inside any (closed) room polygon — the walkable union of the house. */
+function pointInAnyRoom(p: Vec2, polys: Vec2[][]): boolean {
+  return polys.some((poly) => poly.length >= 3 && pointInPoly(p, poly));
+}
+
+/** Resolve the human proxy against furniture footprints + the house boundary so it
     physically can't overlap — letting the user test whether it fits through a gap. */
-function resolveProxy(desired: Vec2, current: Vec2, furniture: Boxish[], polygon: Vec2[]): Vec2 {
+function resolveProxy(desired: Vec2, current: Vec2, furniture: Boxish[], polys: Vec2[][]): Vec2 {
   let x = desired.x, y = desired.y;
   // push out of any overlapping furniture box along the least-penetration axis
   for (const o of furniture) {
@@ -79,10 +84,11 @@ function resolveProxy(desired: Vec2, current: Vec2, furniture: Boxish[], polygon
       else y = o.y + Math.sign(dy || 1) * (PROXY_HD + e.hd);
     }
   }
-  // keep the centre inside the room; revert the offending axis if it leaves
-  if (polygon.length >= 3 && !pointInPoly({ x, y }, polygon)) {
-    if (pointInPoly({ x, y: current.y }, polygon)) y = current.y;
-    else if (pointInPoly({ x: current.x, y }, polygon)) x = current.x;
+  // keep the centre inside the house (any room); revert the offending axis if it leaves
+  const hasRoom = polys.some((p) => p.length >= 3);
+  if (hasRoom && !pointInAnyRoom({ x, y }, polys)) {
+    if (pointInAnyRoom({ x, y: current.y }, polys)) y = current.y;
+    else if (pointInAnyRoom({ x: current.x, y }, polys)) x = current.x;
     else { x = current.x; y = current.y; }
   }
   return { x: Math.round(x), y: Math.round(y) };
@@ -96,7 +102,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
   const [drag, setDrag] = useState<Drag | null>(null);
   const [cursor, setCursor] = useState<Vec2 | null>(null);
   const drawing = s.tool === "draw";
-  const GRID = 25; // cm snap
+  const GRID = s.gridSize || 25; // cm snap (user-configurable)
   const DRAG_THRESH = 4; // px before an object actually starts moving
 
   // ---- hold-to-pan: spacebar (any tool) ----
@@ -141,17 +147,18 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
   }, [view]);
   const snap = (p: Vec2): Vec2 => ({ x: Math.round(p.x / GRID) * GRID, y: Math.round(p.y / GRID) * GRID });
 
-  // ---- fit to content on mount / room change ----
+  // ---- fit to content on mount / room change ---- (frames the whole house)
   useEffect(() => {
     if (!w) return;
-    const pts = s.room.closed ? s.room.polygon : (s.draftPoints.length ? s.draftPoints : s.room.polygon);
+    const allPts = s.rooms.flatMap((r) => r.polygon);
+    const pts = s.drafting && s.draftPoints.length ? s.draftPoints : (allPts.length ? allPts : s.draftPoints);
     if (!pts.length) { s.setView2d({ pan: { x: w / 2, y: h / 2 }, zoom: 0.6 }); return; }
     const b = bounds(pts);
     const pad = 90;
     const zoom = Math.min((w - pad * 2) / Math.max(1, b.maxX - b.minX), (h - pad * 2) / Math.max(1, b.maxY - b.minY), 1.4);
     s.setView2d({ zoom, pan: { x: (w - (b.maxX + b.minX) * zoom) / 2, y: (h - (b.maxY + b.minY) * zoom) / 2 } });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [w, h, s.room.closed, s.fitTick]);
+  }, [w, h, s.rooms.length, s.fitTick]);
 
   // ---- wheel zoom toward cursor ----
   const onWheel = (e: React.WheelEvent) => {
@@ -191,6 +198,13 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
     const wpt = toWorld(e.clientX, e.clientY);
     setDrag({ type: "proxy", off: { x: wpt.x - s.proxy.x, y: wpt.y - s.proxy.y } });
   };
+  // pressing on a room's floor pans like the background, but a click (no drag) selects that room
+  const onRoomDown = (e: React.PointerEvent, roomId: string) => {
+    if (wantsPan(e) || s.tool === "pan") { onDown(e); return; }
+    e.stopPropagation();
+    movedRef.current = false;
+    setDrag({ type: "pan-bg", sx: e.clientX, sy: e.clientY, p0: { ...view.pan }, moved: false, roomId });
+  };
   const onRotDown = (e: React.PointerEvent, o: { id: string }) => {
     e.stopPropagation();
     setDrag({ type: "rotate", id: o.id });
@@ -219,7 +233,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
         const wpt = toWorld(e.clientX, e.clientY);
         const desired = { x: wpt.x - drag.off.x, y: wpt.y - drag.off.y };
         const others = s.furniture.filter((f) => !f.flat && !f.hidden);
-        const adj = resolveProxy(desired, s.proxy, others, s.room.polygon);
+        const adj = resolveProxy(desired, s.proxy, others, s.rooms.map((r) => r.polygon));
         s.setProxy(adj);
       } else if (drag.type === "rotate") {
         const o = s.furniture.find((f) => f.id === drag.id);
@@ -231,7 +245,9 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
       }
     };
     const up = () => {
-      if (drag.type === "pan-bg" && !drag.moved) s.select(null);
+      if (drag.type === "pan-bg" && !drag.moved) {
+        if (drag.roomId) s.selectRoom(drag.roomId); else s.select(null);
+      }
       setDrag(null);
     };
     window.addEventListener("pointermove", move);
@@ -278,8 +294,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
     }
   }
 
-  const roomPts = s.room.closed ? s.room.polygon : s.draftPoints;
-  const roomEdges = s.room.closed ? edges(s.room.polygon) : [];
+  const hasAnyRoom = s.rooms.some((r) => r.closed && r.polygon.length >= 3);
   const selectedObj = s.furniture.find((f) => f.id === s.selectedId);
 
   const cursorStyle = (spaceHeld || s.tool === "pan") ? "grab" : drawing ? "crosshair" : "default";
@@ -293,14 +308,22 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
 
           {/* existing scene — dimmed + click-through while tracing a new room */}
           <g opacity={drawing ? 0.28 : 1} style={{ pointerEvents: drawing ? "none" : "auto" }}>
-            {roomPts.length >= 2 && (
-              <path d={"M" + roomPts.map((p) => p.x + " " + p.y).join(" L ") + (s.room.closed ? " Z" : "")}
-                fill={s.room.closed ? (blueprint ? "rgba(255,255,255,0.06)" : "#ffffff") : "none"}
-                stroke={blueprint ? "#ffffff" : "var(--text)"} strokeWidth={2.4 / view.zoom} strokeLinejoin="round" />
-            )}
+            {/* room floors — every room; the active room is tinted + accent-outlined */}
+            {s.rooms.map((room) => {
+              if (room.polygon.length < 2) return null;
+              const active = !s.selectedId && room.id === s.activeRoomId;
+              return (
+                <path key={room.id}
+                  d={"M" + room.polygon.map((p) => p.x + " " + p.y).join(" L ") + " Z"}
+                  onPointerDown={(e) => onRoomDown(e, room.id)} style={{ cursor: "pointer" }}
+                  fill={active ? (blueprint ? "rgba(120,170,255,0.18)" : shade(accent, 1.86)) : (blueprint ? "rgba(255,255,255,0.06)" : "#ffffff")}
+                  stroke={active ? accent : (blueprint ? "#ffffff" : "var(--text)")}
+                  strokeWidth={(active ? 3.4 : 2.2) / view.zoom} strokeLinejoin="round" />
+              );
+            })}
 
             {/* clearance zones */}
-            {s.room.closed && s.showClearance && s.furniture.filter((f) => !f.flat && !f.hidden).map((o) => {
+            {hasAnyRoom && s.showClearance && s.furniture.filter((f) => !f.flat && !f.hidden).map((o) => {
               const cl = 60;
               return <g key={"cl" + o.id} transform={`translate(${o.x} ${o.y}) rotate(${o.rot || 0})`}>
                 <rect x={-(o.w / 2 + cl)} y={-(o.d / 2 + cl)} width={o.w + cl * 2} height={o.d + cl * 2}
@@ -309,7 +332,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
             })}
 
             {/* furniture footprints */}
-            {s.room.closed && s.furniture.filter((o) => !o.hidden).map((o) => {
+            {hasAnyRoom && s.furniture.filter((o) => !o.hidden).map((o) => {
               const sel = s.selectedId === o.id;
               const fill = o.flat ? o.color : shade(o.color, 1.08);
               return (
@@ -334,7 +357,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
             })}
 
             {/* selection dims + rotate handle */}
-            {s.room.closed && selectedObj && (
+            {hasAnyRoom && selectedObj && (
               <g transform={`translate(${selectedObj.x} ${selectedObj.y}) rotate(${selectedObj.rot || 0})`} style={{ pointerEvents: "none" }}>
                 <DimLabel x={0} y={-selectedObj.d / 2 - 16 / view.zoom} z={view.zoom} text={Math.round(selectedObj.w) + ""} accent={accent} />
                 <DimLabel x={selectedObj.w / 2 + 18 / view.zoom} y={0} z={view.zoom} text={Math.round(selectedObj.d) + ""} accent={accent} vert />
@@ -345,10 +368,27 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
               </g>
             )}
 
-            {/* wall dimension labels */}
-            {roomEdges.map((e, i) => {
-              const ox = e.nx * (14 / view.zoom), oy = e.ny * (14 / view.zoom);
-              return <DimLabel key={"wd" + i} x={e.mid.x + ox} y={e.mid.y + oy} z={view.zoom} text={(e.len / 100).toFixed(2) + " m"} muted={!blueprint} light={blueprint} />;
+            {/* wall dimension labels — per room */}
+            {s.rooms.filter((r) => r.closed && r.polygon.length >= 3).flatMap((room) =>
+              edges(room.polygon).map((e, i) => {
+                const ox = e.nx * (14 / view.zoom), oy = e.ny * (14 / view.zoom);
+                return <DimLabel key={room.id + "wd" + i} x={e.mid.x + ox} y={e.mid.y + oy} z={view.zoom} text={(e.len / 100).toFixed(2) + " m"} muted={!blueprint} light={blueprint} />;
+              }),
+            )}
+
+            {/* room name + area labels (centred) — optional */}
+            {s.showRoomLabels && s.rooms.filter((r) => r.closed && r.polygon.length >= 3).map((room) => {
+              const c = centroid(room.polygon);
+              const aM2 = (area(room.polygon) / 10000).toFixed(1) + " m²";
+              const halo = blueprint ? "rgba(31,58,107,0.55)" : "rgba(255,255,255,0.9)";
+              return (
+                <g key={room.id + "name"} transform={`translate(${c.x} ${c.y}) scale(${1 / view.zoom})`} style={{ pointerEvents: "none" }}>
+                  <text textAnchor="middle" y={-1} fontFamily="var(--ui)" fontSize={13.5} fontWeight={700}
+                    stroke={halo} strokeWidth={3.5} style={{ paintOrder: "stroke" }} fill={blueprint ? "#fff" : "var(--text)"}>{room.name}</text>
+                  <text textAnchor="middle" y={15} fontFamily="var(--mono)" fontSize={10.5} fontWeight={600}
+                    stroke={halo} strokeWidth={3} style={{ paintOrder: "stroke" }} fill={blueprint ? "rgba(255,255,255,0.85)" : "var(--text-3)"}>{aM2}</text>
+                </g>
+              );
             })}
           </g>
 
@@ -373,7 +413,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
           })()}
 
           {/* human proxy */}
-          {s.room.closed && s.showProxy && (
+          {hasAnyRoom && s.showProxy && (
             <g transform={`translate(${s.proxy.x} ${s.proxy.y}) rotate(${s.proxy.rot || 0})`} style={{ cursor: "move" }} onPointerDown={onProxyDown}>
               <rect x={-30} y={-20} width={60} height={40} rx={6} fill="rgba(59,130,246,0.18)" stroke={accent} strokeWidth={1.8 / view.zoom} />
               <g transform={`scale(${1 / view.zoom})`} style={{ pointerEvents: "none" }}>
@@ -387,6 +427,22 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
           )}
         </g>
       </svg>
+
+      {/* snap-increment selector — sets the grid the walls (and furniture nudges) snap to */}
+      <div onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}
+        style={{ position: "absolute", left: 14, top: 56, display: "flex", alignItems: "center", gap: 7, padding: "5px 9px 5px 11px", background: "var(--panel)", borderRadius: 99, boxShadow: "var(--sh-1)", fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", zIndex: 8 }}>
+        <Icon name="grid" size={14} />
+        <span>Grid</span>
+        <select value={s.gridSize} onChange={(e) => s.setGridSize(Number(e.target.value))}
+          style={{ border: "1px solid var(--border-strong)", borderRadius: 7, background: "var(--panel-2)", font: "inherit", fontSize: 12.5, fontWeight: 600, color: "var(--text)", padding: "2px 4px", cursor: "pointer", outline: "none" }}>
+          {[5, 10, 25, 50, 100].map((v) => <option key={v} value={v}>{v} cm</option>)}
+        </select>
+        <span style={{ width: 1, height: 18, background: "var(--border)" }} />
+        <button onClick={() => s.toggle("showRoomLabels")} title={s.showRoomLabels ? "Hide room labels" : "Show room labels"}
+          style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 8px", border: "none", borderRadius: 99, cursor: "pointer", font: "inherit", fontSize: 12.5, fontWeight: 600, background: s.showRoomLabels ? "var(--accent-soft)" : "transparent", color: s.showRoomLabels ? "var(--accent-600)" : "var(--text-3)" }}>
+          <Icon name={s.showRoomLabels ? "eye" : "eyeOff"} size={14} /> Labels
+        </button>
+      </div>
 
       {/* draw-mode helper */}
       {drawing && (
