@@ -38,6 +38,9 @@ export interface Furniture {
   hidden?: boolean;
   /** URL of a generated GLB mesh; when present the box placeholder is swapped for the mesh. */
   meshUrl?: string | null;
+  /** the mesh bytes for this object live in IndexedDB keyed by its id (uploaded model or
+      cached remote GLB). Persists across reload; drives rehydration (see store.rehydrateMeshes). */
+  meshStored?: boolean;
 }
 
 export type OpeningType = "door" | "window";

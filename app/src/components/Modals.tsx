@@ -7,6 +7,7 @@ import { useStore } from "../state/store";
 import { CATALOG, SAMPLE_BLURB } from "../state/demoRoom";
 import { parseSpec } from "../services/specParser";
 import { generateFurnitureMesh } from "../services/meshGen";
+import { putMesh, cacheRemoteMesh } from "../services/meshStore";
 import { generateTexture, type PBRMaps } from "../services/textureGen";
 
 function Modal({ title, sub, onClose, children, wide }: {
@@ -38,16 +39,51 @@ const ImgPlaceholder = ({ label, h }: { label: string; h?: number }) => (
 export function FurnitureModal({ onClose }: { onClose: () => void }) {
   const addFurniture = useStore((s) => s.addFurniture);
   const setFurnitureMesh = useStore((s) => s.setFurnitureMesh);
-  const [method, setMethod] = useState<"catalog" | "image" | "describe">("catalog");
+  const patch = useStore((s) => s.patch);
+  const [method, setMethod] = useState<"catalog" | "image" | "upload" | "describe">("catalog");
   const [sel, setSel] = useState<string | null>(null);
   const [dims, setDims] = useState({ w: 200, d: 90, h: 80 });
   const [name, setName] = useState("New Object");
-  const [hasImg, setHasImg] = useState(false);
   const [blurb, setBlurb] = useState("");
   const [parsing, setParsing] = useState(false);
   const [parsed, setParsed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Image → 3D: real preview (object URL) + base64 data URL sent to the provider.
+  const [imgPreview, setImgPreview] = useState<string | null>(null);
+  const [imgDataUrl, setImgDataUrl] = useState<string | null>(null);
+  // Upload: the chosen .glb/.gltf file.
+  const [modelFile, setModelFile] = useState<File | null>(null);
+  const imgInput = useRef<HTMLInputElement>(null);
+  const modelInput = useRef<HTMLInputElement>(null);
 
   const pick = (c: typeof CATALOG[number]) => { setSel(c.id); setName(c.name); setDims({ w: c.w, d: c.d, h: c.h }); };
+
+  const defaultName = (fileName: string) => { if (!name || name === "New Object") setName(fileName.replace(/\.[^.]+$/, "").slice(0, 32)); };
+
+  const onImage = (files: FileList | null) => {
+    const f = files?.[0];
+    if (!f) return;
+    setError(null);
+    if (!f.type.startsWith("image/")) { setError("Please choose an image file (PNG/JPG/WebP)."); return; }
+    if (f.size > 10 * 1024 * 1024) { setError("Image is too large (max 10 MB)."); return; }
+    if (imgPreview) URL.revokeObjectURL(imgPreview);
+    setImgPreview(URL.createObjectURL(f));
+    const reader = new FileReader();
+    reader.onload = () => setImgDataUrl(typeof reader.result === "string" ? reader.result : null);
+    reader.onerror = () => setError("Could not read that image.");
+    reader.readAsDataURL(f);
+    defaultName(f.name);
+  };
+
+  const onModel = (files: FileList | null) => {
+    const f = files?.[0];
+    if (!f) return;
+    setError(null);
+    if (!/\.(glb|gltf)$/i.test(f.name)) { setError("Please choose a .glb or .gltf file."); return; }
+    if (f.size > 75 * 1024 * 1024) { setError("Model is too large (max 75 MB)."); return; }
+    setModelFile(f);
+    defaultName(f.name);
+  };
 
   const parseBlurb = async () => {
     setParsing(true); setParsed(false);
@@ -57,12 +93,47 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
     setParsing(false); setParsed(true);
   };
 
-  const add = () => {
+  const canAdd = method === "upload" ? !!modelFile : method === "image" ? !!imgDataUrl : true;
+
+  const add = async () => {
+    // 1) Upload a model: bytes are in hand → place immediately (status ready), persist to IDB.
+    if (method === "upload") {
+      if (!modelFile) return;
+      try {
+        const bytes = await modelFile.arrayBuffer();
+        const mime = modelFile.name.toLowerCase().endsWith(".glb") ? "model/gltf-binary" : "model/gltf+json";
+        const meshUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+        const id = addFurniture({ name, type: "box", ...dims, meshUrl });
+        await putMesh(id, bytes, mime, modelFile.name);
+        patch(id, { meshStored: true });
+      } catch (err) {
+        console.warn("[upload] could not read model file:", err);
+        setError("Could not read that model file.");
+        return;
+      }
+      onClose();
+      return;
+    }
+
+    // 2) Image → 3D: drop a placeholder box now; swap in the generated GLB when the job resolves.
+    if (method === "image") {
+      if (!imgDataUrl) return;
+      const id = addFurniture({ name, type: "box", ...dims });
+      void generateFurnitureMesh({ name, type: "box", ...dims, sourceImage: true, imageDataUrl: imgDataUrl })
+        .then(async (job) => {
+          setFurnitureMesh(id, job.meshUrl, "ready");
+          // Cache the (expiring) remote GLB to IDB so it survives reload; degrade to https on CORS failure.
+          if (job.meshUrl && (await cacheRemoteMesh(id, job.meshUrl))) patch(id, { meshStored: true });
+        })
+        .catch((err) => { console.warn("[meshGen] image→3D failed:", err); setFurnitureMesh(id, null, "error"); });
+      onClose();
+      return;
+    }
+
+    // 3) Catalog / Describe: procedural mock model (no image, no key needed).
     const type = sel ? (CATALOG.find((c) => c.id === sel)?.type || "box") : "box";
     const id = addFurniture({ name, type, ...dims });
-    // Kick off async mesh generation: a placeholder box is already on the scene;
-    // when the job resolves we swap in the generated GLB (preserving transform).
-    void generateFurnitureMesh({ name, type, ...dims, sourceImage: hasImg })
+    void generateFurnitureMesh({ name, type, ...dims })
       .then((job) => setFurnitureMesh(id, job.meshUrl, "ready"))
       .catch(() => setFurnitureMesh(id, null, "error"));
     onClose();
@@ -80,6 +151,7 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
         <div style={{ width: 190, padding: 12, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 3 }}>
           {tab("catalog", "folder", "Catalog")}
           {tab("image", "image", "Image → 3D")}
+          {tab("upload", "box", "Upload model")}
           {tab("describe", "sparkle", "Describe (AI)")}
           <div style={{ marginTop: "auto", padding: 10, background: "var(--panel-3)", borderRadius: 8, fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.5 }}>
             <strong style={{ color: "var(--text)" }}>Modular tip:</strong> build an L-sofa by snapping separate scaled pieces, not stretching one mesh.
@@ -103,22 +175,54 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
 
           {method === "image" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>Drop a product photo. We send it to the 3D-generation API; you'll see a bounding-box placeholder that swaps to the mesh when ready.</p>
-              {!hasImg ? (
-                <button onClick={() => setHasImg(true)} style={{ border: "1.5px dashed var(--border-strong)", borderRadius: 12, background: "var(--panel-2)", padding: "30px 20px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: "var(--text-2)" }}>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>Upload a product photo. We send it to the 3D-generation API; you'll see a bounding-box placeholder that swaps to the mesh when ready.</p>
+              <input ref={imgInput} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => onImage(e.target.files)} />
+              {!imgPreview ? (
+                <button onClick={() => imgInput.current?.click()} style={{ border: "1.5px dashed var(--border-strong)", borderRadius: 12, background: "var(--panel-2)", padding: "30px 20px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: "var(--text-2)" }}>
                   <Icon name="upload" size={26} />
-                  <div style={{ fontSize: 13.5, fontWeight: 560, color: "var(--text)" }}>Drop image or click to upload</div>
-                  <div style={{ fontSize: 12 }}>or use a sample photo</div>
+                  <div style={{ fontSize: 13.5, fontWeight: 560, color: "var(--text)" }}>Click to upload an image</div>
+                  <div style={{ fontSize: 12 }}>PNG, JPG or WebP · max 10 MB</div>
                 </button>
               ) : (
                 <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  <div style={{ width: 120 }}><ImgPlaceholder label="product.jpg" h={120} /></div>
+                  <div style={{ width: 120, height: 120, borderRadius: 8, background: `url(${imgPreview}) center/cover`, border: "1px solid var(--border-strong)" }} />
                   <div style={{ flex: 1 }}>
                     <span className="tag green"><Icon name="check" size={12} /> Image ready</span>
                     <p style={{ fontSize: 12.5, color: "var(--text-2)", margin: "8px 0 0", lineHeight: 1.5 }}>On <strong>Add</strong>, a placeholder box appears immediately and the generated mesh streams in.</p>
+                    <button className="btn sm ghost" onClick={() => imgInput.current?.click()} style={{ marginTop: 8 }}>Choose another</button>
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {method === "upload" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>Upload your own <strong>.glb</strong> (or self-contained <strong>.gltf</strong>) model. It's placed immediately, scaled to the bounding box, and saved to this browser so it survives a reload.</p>
+              <input ref={modelInput} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" style={{ display: "none" }} onChange={(e) => onModel(e.target.files)} />
+              {!modelFile ? (
+                <button onClick={() => modelInput.current?.click()} style={{ border: "1.5px dashed var(--border-strong)", borderRadius: 12, background: "var(--panel-2)", padding: "30px 20px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: "var(--text-2)" }}>
+                  <Icon name="box" size={26} />
+                  <div style={{ fontSize: 13.5, fontWeight: 560, color: "var(--text)" }}>Click to upload a 3D model</div>
+                  <div style={{ fontSize: 12 }}>.glb or .gltf · max 75 MB</div>
+                </button>
+              ) : (
+                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  <div style={{ width: 64, height: 64, borderRadius: 8, background: "var(--panel-3)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent-600)" }}><Icon name="box" size={28} /></div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <span className="tag green"><Icon name="check" size={12} /> Model ready</span>
+                    <div className="mono" style={{ fontSize: 11.5, color: "var(--text-2)", margin: "8px 0 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{modelFile.name} · {(modelFile.size / 1024 / 1024).toFixed(1)} MB</div>
+                    <button className="btn sm ghost" onClick={() => modelInput.current?.click()} style={{ marginTop: 8 }}>Choose another</button>
+                  </div>
+                </div>
+              )}
+              <p style={{ margin: 0, fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>Tip: <strong>.gltf</strong> must embed its buffers/textures — files that reference external <span className="mono">.bin</span>/images won't resolve and will fall back to the box.</p>
+            </div>
+          )}
+
+          {error && (
+            <div style={{ marginTop: 12, padding: "9px 11px", borderRadius: 8, background: "var(--danger-soft, #fdecec)", color: "var(--danger, #b3261e)", fontSize: 12.5, display: "flex", alignItems: "center", gap: 7 }}>
+              <Icon name="lock" size={14} /> {error}
             </div>
           )}
 
@@ -156,7 +260,7 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
               ))}
             </div>
           </div>
-          <button className="btn primary" style={{ marginTop: "auto" }} onClick={add}><Icon name="plus" size={16} /> Add to scene</button>
+          <button className="btn primary" style={{ marginTop: "auto" }} onClick={add} disabled={!canAdd}><Icon name="plus" size={16} /> Add to scene</button>
         </div>
       </div>
     </Modal>
