@@ -1,5 +1,5 @@
 /* ===== Roomscale — app shell, A/B layout directions (ported from prototype app.jsx) ===== */
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useState, useRef, lazy, Suspense } from "react";
 import { Icon, type IconName } from "./components/Icon";
 import { useStore } from "./state/store";
 import { shade } from "./domain/geometry";
@@ -8,7 +8,7 @@ import { ToolRail } from "./components/ToolRail";
 import { ObjectsPanel } from "./components/ObjectsPanel";
 import { Inspector } from "./components/Inspector";
 import { Canvas2D } from "./canvas2d/Canvas2D";
-import { FurnitureModal, TextureModal } from "./components/Modals";
+import { FurnitureModal, TextureModal, RoomModal } from "./components/Modals";
 import type { ViewMode } from "./domain/types";
 
 // Code-split the 3D engine (three/drei/rapier) so the 2D editor loads fast and
@@ -45,6 +45,7 @@ export function App() {
       {t.direction === "A" ? <LayoutA tweaks={t} /> : <LayoutB tweaks={t} />}
       {modal === "furniture" && <FurnitureModal onClose={closeModal} />}
       {modal === "texture" && <TextureModal onClose={closeModal} />}
+      {modal === "room" && <RoomModal onClose={closeModal} />}
       <TweaksPanel t={t} setTweak={setTweak} />
     </div>
   );
@@ -58,11 +59,73 @@ function ModeButton({ id, icon, label, mode, setMode }: { id: ViewMode; icon: Ic
   );
 }
 
+function HouseMenu() {
+  const rooms = useStore((s) => s.rooms);
+  const activeRoomId = useStore((s) => s.activeRoomId);
+  const selectRoom = useStore((s) => s.selectRoom);
+  const startDraw = useStore((s) => s.startDraw);
+  const newHouse = useStore((s) => s.newHouse);
+  const openModal = useStore((s) => s.openModal);
+  const [open, setOpen] = useState(false);
+  const active = rooms.find((r) => r.id === activeRoomId);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [open]);
+
+  const item: React.CSSProperties = { display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "8px 10px", border: "none", background: "transparent", borderRadius: "var(--r-sm)", cursor: "pointer", fontSize: 13, fontWeight: 500, color: "var(--text)", textAlign: "left" };
+
+  return (
+    <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+      <button className="btn ghost sm" onClick={() => setOpen((o) => !o)} style={{ gap: 7 }} title="House & rooms">
+        <Icon name="layers" size={15} />
+        <span style={{ maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rooms.length ? (active?.name ?? "House") : "New house"}</span>
+        <span className="tag gray">{rooms.length}</span>
+        <Icon name="chevron" size={13} />
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, width: 248, background: "var(--panel)", borderRadius: "var(--r-lg)", boxShadow: "var(--sh-3)", border: "1px solid var(--border)", zIndex: 40, padding: 6 }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "var(--text-3)", padding: "6px 10px 4px" }}>Rooms</div>
+          {rooms.length ? rooms.map((r) => {
+            const on = r.id === activeRoomId;
+            return (
+              <button key={r.id} onClick={() => { selectRoom(r.id); setOpen(false); }}
+                style={{ ...item, background: on ? "var(--accent-soft)" : "transparent", color: on ? "var(--accent-600)" : "var(--text)" }}>
+                <Icon name="grid" size={15} /><span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
+                {on && <Icon name="check" size={15} />}
+              </button>
+            );
+          }) : <div style={{ padding: "4px 10px 8px", fontSize: 12, color: "var(--text-3)" }}>No rooms yet.</div>}
+          <hr className="divider" style={{ margin: "6px 4px" }} />
+          <button onClick={() => { startDraw(); setOpen(false); }} style={item}><Icon name="pen" size={15} /> Draw a room</button>
+          <button onClick={() => { openModal("room"); setOpen(false); }} style={item}><Icon name="plus" size={15} /> Rectangular room…</button>
+          <button onClick={() => { if (confirm("Start a new, empty house? This clears all rooms and furniture.")) { newHouse(); setOpen(false); } }} style={{ ...item, color: "var(--danger)" }}><Icon name="trash" size={15} /> New house</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TopBar({ dir }: { dir: "A" | "B" }) {
   const mode = useStore((s) => s.mode);
   const setMode = useStore((s) => s.setMode);
   const fit = useStore((s) => s.fit);
-  const room = useStore((s) => s.room);
+  const rooms = useStore((s) => s.rooms);
+  const activeRoomId = useStore((s) => s.activeRoomId);
+  const activeRoom = rooms.find((r) => r.id === activeRoomId);
+
+  // The scene auto-saves to this browser on every change (Zustand persist); Save just confirms it.
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const onSave = () => {
+    setSaved(true);
+    clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 1800);
+  };
+  useEffect(() => () => clearTimeout(savedTimer.current), []);
 
   return (
     <header style={{ display: "flex", alignItems: "center", gap: 14, height: 56, padding: "0 14px", background: "var(--panel)", borderBottom: "1px solid var(--border)", zIndex: 20 }}>
@@ -71,7 +134,9 @@ function TopBar({ dir }: { dir: "A" | "B" }) {
         <div style={{ fontWeight: 720, fontSize: 15, letterSpacing: "-0.01em" }}>Roomscale</div>
         <span className="tag gray" style={{ marginLeft: 2 }}>Berowra</span>
       </div>
-      <div style={{ display: "flex", gap: 4, marginLeft: 6 }}>
+      <div style={{ width: 1, height: 24, background: "var(--border)" }} />
+      <HouseMenu />
+      <div style={{ display: "flex", gap: 4 }}>
         <button className="icon-btn" title="Undo"><Icon name="undo" size={17} /></button>
         <button className="icon-btn" title="Redo"><Icon name="redo" size={17} /></button>
       </div>
@@ -84,7 +149,7 @@ function TopBar({ dir }: { dir: "A" | "B" }) {
           </div>
         ) : (
           <div style={{ fontSize: 13, color: "var(--text-2)", display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="mono" style={{ fontSize: 12 }}>{room.closed && room.polygon.length >= 3 ? (room.name || "Untitled room") : "No room"}</span>
+            <span className="mono" style={{ fontSize: 12 }}>{rooms.length ? `${rooms.length} room${rooms.length > 1 ? "s" : ""}${activeRoom ? ` · ${activeRoom.name}` : ""}` : "No rooms"}</span>
             <span style={{ color: "var(--text-3)" }}>·</span>
             <span>autosaved</span>
           </div>
@@ -92,8 +157,10 @@ function TopBar({ dir }: { dir: "A" | "B" }) {
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button className="btn ghost sm" onClick={fit} title="Fit view"><Icon name="fit" size={16} /></button>
-        <button className="btn sm"><Icon name="save" size={15} /> Save</button>
-        <button className="btn primary sm">Share</button>
+        <button className="btn sm" onClick={onSave} title="Your design auto-saves to this browser"
+          style={saved ? { color: "var(--good, #15803d)", borderColor: "var(--good, #15803d)" } : undefined}>
+          <Icon name={saved ? "check" : "save"} size={15} /> {saved ? "Saved" : "Save"}
+        </button>
       </div>
     </header>
   );

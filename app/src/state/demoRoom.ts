@@ -3,6 +3,9 @@ import type {
   CatalogItem, Furniture, Material, MaterialKey, Opening, SceneState, Vec2,
 } from "../domain/types";
 
+/** Stable id for the demo room (shared by its openings + furniture). */
+export const DEMO_ROOM_ID = "room-main";
+
 /** L-shaped open-plan living / kitchen */
 export const ROOM_POLYGON: Vec2[] = [
   { x: 0,   y: 0   },
@@ -17,9 +20,9 @@ export const WALL_HEIGHT = 270; // cm
 
 /** Openings (cut into walls via CSG) — wall segment index + offset + size */
 export const OPENINGS: Opening[] = [
-  { id: "op-door",  type: "door",   wall: 5, offset: 60,  width: 90,  height: 210, label: "Entry" },
-  { id: "op-win-1", type: "window", wall: 0, offset: 120, width: 180, height: 130, sill: 90, label: "Window" },
-  { id: "op-win-2", type: "window", wall: 1, offset: 90,  width: 150, height: 130, sill: 90, label: "Window" },
+  { id: "op-door",  type: "door",   roomId: DEMO_ROOM_ID, wall: 5, offset: 60,  width: 90,  height: 210, label: "Entry" },
+  { id: "op-win-1", type: "window", roomId: DEMO_ROOM_ID, wall: 0, offset: 120, width: 180, height: 130, sill: 90, label: "Window" },
+  { id: "op-win-2", type: "window", roomId: DEMO_ROOM_ID, wall: 1, offset: 90,  width: 150, height: 130, sill: 90, label: "Window" },
 ];
 
 export const MATERIALS: Record<MaterialKey, Material> = {
@@ -65,8 +68,8 @@ export const SAMPLE_BLURB =
 /** Build a fresh copy of the complete demo scene (deep-cloned so the store owns it). */
 export function makeDemoScene(): SceneState {
   return {
-    room: { closed: true, polygon: ROOM_POLYGON.map((p) => ({ ...p })), name: "Open-Plan Room" },
-    furniture: FURNITURE.map((o) => ({ ...o })),
+    rooms: [{ id: DEMO_ROOM_ID, closed: true, polygon: ROOM_POLYGON.map((p) => ({ ...p })), name: "Open-Plan Room" }],
+    furniture: FURNITURE.map((o) => ({ ...o, roomId: DEMO_ROOM_ID })),
     openings: OPENINGS.map((o) => ({ ...o })),
     materials: {
       floor: { ...MATERIALS.floor },
@@ -76,10 +79,10 @@ export function makeDemoScene(): SceneState {
   };
 }
 
-/** An empty scene (used by "New Room"). */
+/** An empty house (used by "New house") — no rooms yet. */
 export function makeEmptyScene(): SceneState {
   return {
-    room: { closed: false, polygon: [], name: "New Room" },
+    rooms: [],
     furniture: [],
     openings: [],
     materials: {

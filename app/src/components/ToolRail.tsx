@@ -17,8 +17,11 @@ export function ToolRail() {
       <Tool icon="hand" tip="Pan — or hold Space / middle-drag (H)" active={s.tool === "pan"} onClick={() => s.setTool("pan")} />
       <hr className="divider" style={{ width: 22, margin: "6px 0" }} />
       <Tool icon="plus" tip="Add furniture" active={s.modal === "furniture"} onClick={() => s.openModal("furniture")} />
-      <Tool icon="swatch" tip="Materials" active={s.inspectorTab === "materials"} onClick={() => { s.select(null); s.setInspectorTab("materials"); }} />
-      <Tool icon="ruler" tip="Measure" active={s.tool === "measure"} onClick={() => s.setTool("measure")} />
+      <Tool icon="swatch" tip="Materials" active={s.inspectorTab === "materials"} onClick={() => {
+        if (!s.activeRoomId && s.rooms[0]) s.selectRoom(s.rooms[0].id);
+        s.select(null);
+        s.setInspectorTab("materials");
+      }} />
       <hr className="divider" style={{ width: 22, margin: "6px 0" }} />
       <Tool icon="clearance" tip="Clearance zones (60cm)" active={s.showClearance} onClick={() => s.toggle("showClearance")} />
       <Tool icon="person" tip="Human proxy" active={s.showProxy} onClick={() => s.toggle("showProxy")} />

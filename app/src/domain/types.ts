@@ -27,6 +27,8 @@ export interface Furniture {
   h: number;
   color: string;
   status: GenStatus;
+  /** id of the room this object lives in (by centroid containment); used for grouping + cleanup. */
+  roomId?: string | null;
   /** flat objects (rugs) render as a thin floor plate and are excluded from clearance/collision. */
   flat?: boolean;
   /** id of the object this is nested under — coords then resolve in the parent's local frame. */
@@ -44,6 +46,8 @@ export type OpeningType = "door" | "window";
 export interface Opening {
   id: string;
   type: OpeningType;
+  /** id of the room whose wall this opening is cut into */
+  roomId: string;
   /** index into the room polygon's edge list */
   wall: number;
   /** distance (cm) from the wall segment's start vertex to the opening's near edge */
@@ -80,6 +84,7 @@ export interface Material {
 }
 
 export interface Room {
+  id: string;
   closed: boolean;
   polygon: Vec2[];
   name: string;
@@ -109,9 +114,9 @@ export interface Proxy {
 }
 
 export type ViewMode = "2d" | "3d" | "walk";
-export type Tool = "select" | "draw" | "pan" | "measure";
+export type Tool = "select" | "draw" | "pan";
 export type InspectorTab = "object" | "room" | "materials";
-export type ModalKind = "furniture" | "texture" | null;
+export type ModalKind = "furniture" | "texture" | "room" | null;
 export type MaterialKey = "floor" | "walls";
 
 /** A catalog entry for the "add furniture" pipeline. */
@@ -126,7 +131,7 @@ export interface CatalogItem {
 
 /** The complete serializable scene — what gets persisted and what "Demo Room" injects. */
 export interface SceneState {
-  room: Room;
+  rooms: Room[];
   furniture: Furniture[];
   openings: Opening[];
   materials: Record<MaterialKey, Material>;

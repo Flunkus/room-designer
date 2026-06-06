@@ -125,13 +125,19 @@ function Player({ spawn }: { spawn: { x: number; z: number } }) {
 }
 
 function WalkColliders() {
-  const room = useStore((s) => s.room);
+  const rooms = useStore((s) => s.rooms);
   const openings = useStore((s) => s.openings);
   const wallHeight = useStore((s) => s.wallHeight);
   const furniture = useStore((s) => s.furniture);
 
-  const wallPieces = useMemo(() => buildWalls(room.polygon, openings, wallHeight), [room.polygon, openings, wallHeight]);
-  const b = useMemo(() => bounds(room.polygon), [room.polygon]);
+  const wallPieces = useMemo(() => {
+    const closed = rooms.filter((r) => r.closed && r.polygon.length >= 3);
+    return closed.flatMap((r) => buildWalls(r.polygon, openings.filter((o) => o.roomId === r.id), wallHeight));
+  }, [rooms, openings, wallHeight]);
+  const b = useMemo(() => {
+    const pts = rooms.flatMap((r) => r.polygon);
+    return bounds(pts.length ? pts : [{ x: 0, y: 0 }]);
+  }, [rooms]);
   const cx = ((b.minX + b.maxX) / 2) * M, cz = ((b.minY + b.maxY) / 2) * M;
   const hx = ((b.maxX - b.minX) / 2) * M + 0.5, hz = ((b.maxY - b.minY) / 2) * M + 0.5;
 
@@ -166,16 +172,18 @@ function WalkColliders() {
 }
 
 function WalkScene() {
-  const room = useStore((s) => s.room);
+  const rooms = useStore((s) => s.rooms);
   const openings = useStore((s) => s.openings);
   const materials = useStore((s) => s.materials);
   const wallHeight = useStore((s) => s.wallHeight);
   const furniture = useStore((s) => s.furniture);
+  const closed = rooms.filter((r) => r.closed && r.polygon.length >= 3);
 
   const spawn = useMemo(() => {
-    const c = room.polygon.length >= 3 ? centroid(room.polygon) : { x: 0, y: 0 };
+    const r0 = rooms.find((r) => r.closed && r.polygon.length >= 3);
+    const c = r0 ? centroid(r0.polygon) : { x: 0, y: 0 };
     return { x: c.x * M, z: c.y * M };
-  }, [room.polygon]);
+  }, [rooms]);
 
   return (
     <>
@@ -183,8 +191,12 @@ function WalkScene() {
       <hemisphereLight args={["#ffffff", "#cfcabd", 0.6]} />
       <ambientLight intensity={0.4} />
       <directionalLight position={[6, 11, 4]} intensity={1.1} />
-      <Floor polygon={room.polygon} material={materials.floor} />
-      <Walls polygon={room.polygon} openings={openings} wallHeightCm={wallHeight} material={materials.walls} cutaway={false} />
+      {closed.map((r) => (
+        <group key={r.id}>
+          <Floor polygon={r.polygon} material={materials.floor} />
+          <Walls polygon={r.polygon} openings={openings.filter((o) => o.roomId === r.id)} wallHeightCm={wallHeight} material={materials.walls} cutaway={false} />
+        </group>
+      ))}
       <FurnitureLayer furniture={furniture} selectedId={null} accent="#3b82f6" onSelect={() => {}} />
       <Physics gravity={[0, -9.81, 0]}>
         <Player spawn={spawn} />

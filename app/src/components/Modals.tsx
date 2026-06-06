@@ -163,6 +163,60 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+/* ---------------- Add a rectangular room by size ---------------- */
+function SizeField({ label, value, onChange, disabled }: { label: string; value: number; onChange: (n: number) => void; disabled?: boolean }) {
+  return (
+    <span style={{ position: "relative", display: "flex", alignItems: "center", flex: 1 }}>
+      <span style={{ position: "absolute", left: 10, fontSize: 11, color: "var(--text-3)" }}>{label}</span>
+      <input type="number" className="mono" value={value} disabled={disabled}
+        onChange={(e) => onChange(Math.max(0, parseFloat(e.target.value) || 0))}
+        style={{ width: "100%", height: 38, padding: "0 30px 0 60px", border: "1px solid var(--border-strong)", borderRadius: 8, fontSize: 14, textAlign: "right", outline: "none", opacity: disabled ? 0.55 : 1, background: disabled ? "var(--panel-3)" : "var(--panel)" }} />
+      <span style={{ position: "absolute", right: 10, fontSize: 11, color: "var(--text-3)" }}>cm</span>
+    </span>
+  );
+}
+
+export function RoomModal({ onClose }: { onClose: () => void }) {
+  const starterRoom = useStore((s) => s.starterRoom);
+  const [w, setW] = useState(400);
+  const [d, setD] = useState(300);
+  const [square, setSquare] = useState(false);
+  const [name, setName] = useState("");
+  const depth = square ? w : d;
+  const areaM2 = ((Math.max(50, w) * Math.max(50, depth)) / 10000).toFixed(1);
+
+  const create = () => { starterRoom(w, depth, name); onClose(); };
+
+  return (
+    <Modal title="Add a room" sub="Create a rectangular room by size — it drops onto the plan beside your other rooms; move or reshape it after." onClose={onClose}>
+      <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
+        <div>
+          <span className="label-xs">Name (optional)</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Bedroom"
+            style={{ width: "100%", height: 38, marginTop: 6, padding: "0 11px", border: "1px solid var(--border-strong)", borderRadius: 8, fontSize: 14, outline: "none" }} />
+        </div>
+        <div>
+          <span className="label-xs">Size</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+            <SizeField label="Width" value={w} onChange={setW} />
+            <span style={{ color: "var(--text-3)", fontWeight: 600 }}>×</span>
+            <SizeField label="Depth" value={depth} onChange={setD} disabled={square} />
+          </div>
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13, color: "var(--text-2)", cursor: "pointer" }}>
+          <input type="checkbox" checked={square} onChange={(e) => setSquare(e.target.checked)} />
+          Square room (lock depth to width)
+        </label>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", background: "var(--panel-3)", borderRadius: 8, fontSize: 12.5, color: "var(--text-2)" }}>
+          <span>Floor area</span>
+          <span className="mono" style={{ fontWeight: 600, color: "var(--text)" }}>{areaM2} m²</span>
+        </div>
+        <button className="btn primary" onClick={create} style={{ alignSelf: "flex-end" }}><Icon name="plus" size={16} /> Create room</button>
+      </div>
+    </Modal>
+  );
+}
+
 /* ---------------- Texture / material ---------------- */
 type MapKey = "base" | "normal" | "rough";
 
