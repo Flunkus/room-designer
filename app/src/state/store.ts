@@ -8,6 +8,7 @@ import type {
 import { bounds, centroid, pointInPoly } from "../domain/geometry";
 import { uid } from "../domain/util";
 import { makeDemoScene, makeEmptyScene } from "./demoRoom";
+import { copyMesh, deleteMesh, meshObjectUrl } from "../services/meshStore";
 
 export interface RoomState {
   // ---- view / interaction ----
@@ -87,6 +88,8 @@ export interface RoomState {
   duplicate: (id: string) => void;
   addFurniture: (spec: { name?: string; type?: string; w: number; d: number; h: number; meshUrl?: string | null }) => string;
   setFurnitureMesh: (id: string, meshUrl: string | null, status?: Furniture["status"]) => void;
+  /** rebuild blob URLs for objects whose mesh bytes live in IndexedDB (call once on load). */
+  rehydrateMeshes: () => void;
   // openings (CSG)
   addOpening: (o: Omit<Opening, "id">) => void;
   patchOpening: (id: string, p: Partial<Opening>) => void;
@@ -97,7 +100,9 @@ export interface RoomState {
 const isEphemeral = (u?: string | null) => !!u && u.startsWith("blob:");
 
 function sanitizeFurniture(o: Furniture): Furniture {
-  const meshUrl = isEphemeral(o.meshUrl) ? null : o.meshUrl;
+  // meshStored objects keep their bytes in IndexedDB — drop the (session/expiring) URL so
+  // rehydrateMeshes repopulates a fresh blob URL on load instead of flashing a dead one.
+  const meshUrl = o.meshStored || isEphemeral(o.meshUrl) ? null : o.meshUrl;
   // drop in-flight generation state and dead blob meshes back to a stable box
   const status: Furniture["status"] = o.status === "generating" ? "ready" : o.status;
   return { ...o, meshUrl, status };
@@ -311,16 +316,24 @@ export const useStore = create<RoomState>()(
 
       patchMaterial: (k, p) => set((s) => ({ materials: { ...s.materials, [k]: { ...s.materials[k], ...p } } })),
 
-      remove: (id) => set((s) => ({
-        furniture: s.furniture.filter((o) => o.id !== id && o.parent !== id),
-        selectedId: null, inspectorTab: "room",
-      })),
+      remove: (id) => set((s) => {
+        // drop any IndexedDB-backed mesh bytes for the object + its children (fire-and-forget)
+        for (const o of s.furniture) {
+          if ((o.id === id || o.parent === id) && o.meshStored) void deleteMesh(o.id);
+        }
+        return {
+          furniture: s.furniture.filter((o) => o.id !== id && o.parent !== id),
+          selectedId: null, inspectorTab: "room",
+        };
+      }),
 
       duplicate: (id) => set((s) => {
         const o = s.furniture.find((f) => f.id === id);
         if (!o) return {};
         const n: Furniture = { ...o, id: uid("f"), name: o.name + " copy", x: o.x + 40, y: o.y + 40, parent: null };
         n.roomId = roomIdAt({ x: n.x, y: n.y }, s.rooms) ?? o.roomId ?? null;
+        // the copy shares the in-session blob URL, but needs its own IDB entry to survive reload
+        if (o.meshStored) void copyMesh(o.id, n.id);
         return { furniture: [...s.furniture, n], selectedId: n.id, inspectorTab: "object" };
       }),
 
@@ -344,6 +357,13 @@ export const useStore = create<RoomState>()(
 
       setFurnitureMesh: (id, meshUrl, status = "ready") =>
         set((s) => ({ furniture: s.furniture.map((o) => (o.id === id ? { ...o, meshUrl, status } : o)) })),
+
+      rehydrateMeshes: () => {
+        for (const o of get().furniture) {
+          if (!o.meshStored || o.meshUrl) continue;
+          void meshObjectUrl(o.id).then((url) => { if (url) get().setFurnitureMesh(o.id, url, "ready"); });
+        }
+      },
 
       addOpening: (o) => set((s) => ({ openings: [...s.openings, { ...o, id: uid("op") }] })),
       patchOpening: (id, p) => set((s) => ({ openings: s.openings.map((op) => (op.id === id ? { ...op, ...p } : op)) })),
