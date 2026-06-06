@@ -28,6 +28,9 @@ function StageLoading({ label }: { label: string }) {
 export function App() {
   const [t, setTweak] = useTweaks();
 
+  // Rebuild blob URLs for uploaded / cached models whose bytes live in IndexedDB (once on load).
+  useEffect(() => { useStore.getState().rehydrateMeshes(); }, []);
+
   useEffect(() => {
     const r = document.documentElement.style;
     r.setProperty("--accent", t.accent);
