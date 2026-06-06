@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+dist-ssr/
+*.tsbuildinfo
+
+# env / secrets (keep the example)
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+logs/
+
+# vite cache
+.vite/
+**/.vite/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
