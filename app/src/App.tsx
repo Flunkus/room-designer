@@ -254,10 +254,20 @@ function LayoutB({ tweaks }: { tweaks: Tweaks }) {
 
 function Stage({ tweaks, bare }: { tweaks: Tweaks; bare?: boolean }) {
   const s = useStore();
+  // Once 3D has been opened, keep the scene mounted (just hidden) so flicking back to
+  // Plan and into 3D again preserves the camera/orbit exactly where you left it.
+  const [opened3d, setOpened3d] = useState(false);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot latch on first 3D open
+  useEffect(() => { if (s.mode === "3d") setOpened3d(true); }, [s.mode]);
+  const show3d = s.mode === "3d";
   return (
     <div style={{ position: bare ? "absolute" : "relative", inset: bare ? 0 : undefined, minHeight: 0, overflow: "hidden", background: "var(--canvas)" }}>
       {s.mode === "2d" && <Canvas2D accent={tweaks.accent} gridStyle={tweaks.grid} />}
-      {s.mode === "3d" && <Suspense fallback={<StageLoading label="Loading 3D engine…" />}><SceneRoot bare={bare} /></Suspense>}
+      {(show3d || opened3d) && (
+        <div style={{ position: "absolute", inset: 0, display: show3d ? "block" : "none" }}>
+          <Suspense fallback={<StageLoading label="Loading 3D engine…" />}><SceneRoot bare={bare} /></Suspense>
+        </div>
+      )}
       {s.mode === "walk" && <Suspense fallback={<StageLoading label="Loading walkthrough…" />}><Walkthrough /></Suspense>}
       {s.mode === "2d" && (
         <div style={{ position: "absolute", right: bare ? 330 : 14, bottom: 16, display: "flex", flexDirection: "column", gap: 4, background: "var(--panel)", borderRadius: 10, boxShadow: "var(--sh-2)", padding: 4, zIndex: 8 }}>
