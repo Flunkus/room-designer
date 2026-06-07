@@ -54,7 +54,13 @@ export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: n
       brush = evaluator.evaluate(brush, cut, SUBTRACTION);
     });
 
-    const geometry = brush.geometry;
+    // Bake the slab's world transform into the geometry: the mesh below renders with
+    // no transform, but both the raw box and the CSG result are in brush-local space
+    // (the evaluator keeps the result in operand A's frame). Without this every wall
+    // collapses to the world origin, half-sunk into the floor.
+    brush.updateMatrixWorld(true);
+    const geometry = brush.geometry.clone();
+    geometry.applyMatrix4(brush.matrixWorld);
     pieces.push({
       geometry,
       normal: new THREE.Vector3(e.nx, 0, e.ny),
