@@ -1,8 +1,9 @@
 /* ===== Inspector — object + room/materials (ported from prototype panels.jsx) ===== */
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { Icon, TYPE_ICON } from "./Icon";
 import { useStore } from "../state/store";
 import { NumField, Slider, Section, Stat, Toggle, inpStyle } from "./fields";
+import { saveFurnitureToLibrary } from "../services/library";
 import { area, perimeter, shapeName } from "../domain/geometry";
 import type { Furniture, Material, MaterialKey } from "../domain/types";
 
@@ -16,6 +17,14 @@ export function Inspector() {
 function ObjInspector({ o }: { o: Furniture }) {
   const s = useStore();
   const parents = s.furniture.filter((f) => f.id !== o.id && !f.parent && !f.flat);
+  // "Save to My models": stash this object's model at its current size for reuse.
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const onSaveToLibrary = async () => {
+    setSaveState("saving");
+    const ok = await saveFurnitureToLibrary(o).catch(() => false);
+    setSaveState(ok ? "saved" : "error");
+    setTimeout(() => setSaveState("idle"), 2200);
+  };
   return (
     <div style={{ height: "100%", overflowY: "auto" }}>
       <div style={{ padding: "16px 16px 14px", borderBottom: "1px solid var(--border)" }}>
@@ -60,6 +69,17 @@ function ObjInspector({ o }: { o: Furniture }) {
           ))}
         </div>
       </Section>
+
+      {o.meshUrl && (
+        <Section title="My models">
+          <p style={{ margin: "0 0 9px", fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>Save this model at its current size so you can re-place it later without re-uploading.</p>
+          <button className="btn" style={{ width: "100%" }} disabled={saveState === "saving"}
+            onClick={onSaveToLibrary}>
+            <Icon name={saveState === "saved" ? "check" : "save"} size={15} />{" "}
+            {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved to My models" : saveState === "error" ? "Couldn't save — try again" : "Save to My models"}
+          </button>
+        </Section>
+      )}
 
       <div style={{ display: "flex", gap: 8, padding: 16 }}>
         <button className="btn" style={{ flex: 1 }} onClick={() => s.duplicate(o.id)}><Icon name="copy" size={15} /> Duplicate</button>
@@ -125,7 +145,7 @@ function RoomInspector() {
             onMouseLeave={(e) => { if (document.activeElement !== e.currentTarget) e.currentTarget.style.background = "transparent"; }} />
           <button className="icon-btn" style={{ width: 26, height: 26, flexShrink: 0 }} title="Rename room" onClick={() => { nameRef.current?.focus(); nameRef.current?.select(); }}><Icon name="pen" size={13} /></button>
         </div>
-        <div className="mono" style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2, marginLeft: -1 }}>{shape} · Berowra residence</div>
+        <div className="mono" style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2, marginLeft: -1 }}>{shape} · {s.houseName}</div>
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <Stat label="Floor area" value={a + " m²"} />
           <Stat label="Perimeter" value={perim + " m"} />
@@ -163,7 +183,14 @@ function RoomInspector() {
 
       <Section title="Verification">
         <Toggle label="Clearance zones" sub="60 cm walking border" on={s.showClearance} onClick={() => s.toggle("showClearance")} />
-        <Toggle label="Human proxy" sub="60 × 40 × 180 cm dummy" on={s.showProxy} onClick={() => s.toggle("showProxy")} />
+        <Toggle label="Human proxy" sub={`${s.proxy.w ?? 60} × ${s.proxy.d ?? 40} × ${s.proxy.h ?? 180} cm dummy`} on={s.showProxy} onClick={() => s.toggle("showProxy")} />
+        {s.showProxy && (
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <NumField label="W" value={s.proxy.w ?? 60} unit="cm" onChange={(v) => s.setProxy({ w: Math.max(10, v) })} />
+            <NumField label="D" value={s.proxy.d ?? 40} unit="cm" onChange={(v) => s.setProxy({ d: Math.max(10, v) })} />
+            <NumField label="H" value={s.proxy.h ?? 180} unit="cm" onChange={(v) => s.setProxy({ h: Math.max(10, v) })} />
+          </div>
+        )}
       </Section>
     </div>
   );

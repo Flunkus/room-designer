@@ -7,19 +7,9 @@ import { useStore } from "../state/store";
 import { CATALOG, SAMPLE_BLURB } from "../state/demoRoom";
 import { parseSpec } from "../services/specParser";
 import { generateFurnitureMesh } from "../services/meshGen";
-import { putMesh, getMesh, cacheRemoteMesh, saveLibraryModel, listLibrary, deleteLibraryModel, type LibraryEntry } from "../services/meshStore";
-import { topDownImage } from "../services/topdown";
+import { putMesh, getMesh, cacheRemoteMesh, listLibrary, deleteLibraryModel, type LibraryEntry } from "../services/meshStore";
+import { saveModelToLibrary } from "../services/library";
 import { generateTexture, type PBRMaps } from "../services/textureGen";
-
-/** Render a top-down thumbnail (best-effort) and save a model into the durable library. */
-async function addModelToLibrary(meta: { name: string; w: number; d: number; h: number; mime: string }, bytes: ArrayBuffer, meshUrl: string) {
-  try {
-    const thumb = await topDownImage(meshUrl).catch(() => null);
-    await saveLibraryModel({ name: meta.name, type: "box", w: meta.w, d: meta.d, h: meta.h, mime: meta.mime, thumb, createdAt: Date.now() }, bytes);
-  } catch (err) {
-    console.warn("[library] could not save model:", err);
-  }
-}
 
 function Modal({ title, sub, onClose, children, wide }: {
   title: string; sub?: string; onClose: () => void; children: ReactNode; wide?: boolean;
@@ -127,7 +117,7 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
         await putMesh(id, bytes, mime, modelFile.name);
         patch(id, { meshStored: true });
         // keep a durable copy in the reusable library (survives "New house")
-        void addModelToLibrary({ name, ...dims, mime }, bytes, meshUrl);
+        void saveModelToLibrary({ name, ...dims, mime }, bytes, meshUrl);
       } catch (err) {
         console.warn("[upload] could not read model file:", err);
         setError("Could not read that model file.");
@@ -149,7 +139,7 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
             patch(id, { meshStored: true });
             // mirror the cached bytes into the durable library so it survives "New house"
             const stored = await getMesh(id);
-            if (stored) void addModelToLibrary({ name, ...dims, mime: stored.mime }, stored.bytes, job.meshUrl);
+            if (stored) void saveModelToLibrary({ name, ...dims, mime: stored.mime }, stored.bytes, job.meshUrl);
           }
         })
         .catch((err) => { console.warn("[meshGen] image→3D failed:", err); setFurnitureMesh(id, null, "error"); });

@@ -3,7 +3,7 @@ import { useRef, useState, useEffect, useCallback, type CSSProperties } from "re
 import { Icon, TYPE_ICON } from "../components/Icon";
 import { useStore } from "../state/store";
 import { area, bounds, centroid, dist, edges, shade } from "../domain/geometry";
-import { effExtent, resolveProxy, type Boxish } from "../domain/proxy";
+import { effExtent, resolveProxy, proxyHalf, type Boxish } from "../domain/proxy";
 import { topDownImage } from "../services/topdown";
 import type { GridStyle } from "../components/Tweaks";
 import type { Vec2 } from "../domain/types";
@@ -195,7 +195,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
         const wpt = toWorld(e.clientX, e.clientY);
         const desired = { x: wpt.x - drag.off.x, y: wpt.y - drag.off.y };
         const others = s.furniture.filter((f) => !f.flat && !f.hidden);
-        const adj = resolveProxy(desired, s.proxy, others, s.rooms.map((r) => r.polygon));
+        const adj = resolveProxy(desired, s.proxy, others, s.rooms.map((r) => r.polygon), proxyHalf(s.proxy));
         s.setProxy(adj);
       } else if (drag.type === "rotate") {
         const o = s.furniture.find((f) => f.id === drag.id);
@@ -409,7 +409,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
           {/* human proxy */}
           {hasAnyRoom && s.showProxy && (
             <g transform={`translate(${s.proxy.x} ${s.proxy.y}) rotate(${s.proxy.rot || 0})`} style={{ cursor: "move" }} onPointerDown={onProxyDown}>
-              <rect x={-30} y={-20} width={60} height={40} rx={6} fill="rgba(59,130,246,0.18)" stroke={accent} strokeWidth={1.8 / view.zoom} />
+              <rect x={-(s.proxy.w ?? 60) / 2} y={-(s.proxy.d ?? 40) / 2} width={s.proxy.w ?? 60} height={s.proxy.d ?? 40} rx={6} fill="rgba(59,130,246,0.18)" stroke={accent} strokeWidth={1.8 / view.zoom} />
               <g transform={`scale(${1 / view.zoom})`} style={{ pointerEvents: "none" }}>
                 <foreignObject x={-13} y={-13} width={26} height={26}>
                   <div style={{ color: accent, display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 26 }}>

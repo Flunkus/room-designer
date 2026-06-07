@@ -8,10 +8,8 @@ import { type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Proxy } from "../domain/types";
 import { useStore } from "../state/store";
-import { resolveProxy } from "../domain/proxy";
+import { resolveProxy, proxyHalf } from "../domain/proxy";
 import { M, yRotation } from "./coords";
-
-const PW = 60, PD = 40, PH = 180; // cm
 
 export function HumanProxy({ proxy, accent, onDragChange }: {
   proxy: Proxy; accent: string;
@@ -22,6 +20,7 @@ export function HumanProxy({ proxy, accent, onDragChange }: {
   const setProxy = useStore((s) => s.setProxy);
   const furniture = useStore((s) => s.furniture);
   const rooms = useStore((s) => s.rooms);
+  const PW = proxy.w ?? 60, PD = proxy.d ?? 40, PH = proxy.h ?? 180; // cm
   const [dragging, setDragging] = useState(false);
   // offset (cm) between the proxy centre and the grab point, so the block doesn't jump
   const grabOff = useRef({ x: 0, y: 0 });
@@ -42,7 +41,7 @@ export function HumanProxy({ proxy, accent, onDragChange }: {
     e.stopPropagation();
     const desired = { x: e.point.x / M + grabOff.current.x, y: e.point.z / M + grabOff.current.y };
     const others = furniture.filter((f) => !f.flat && !f.hidden);
-    setProxy(resolveProxy(desired, proxy, others, rooms.map((r) => r.polygon)));
+    setProxy(resolveProxy(desired, proxy, others, rooms.map((r) => r.polygon), proxyHalf(proxy)));
   };
 
   const end = () => {

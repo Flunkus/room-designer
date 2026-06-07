@@ -118,6 +118,10 @@ export interface Proxy {
   x: number;
   y: number;
   rot: number;
+  /** footprint + height in cm (defaults: 60 × 40 × 180 — an average standing adult). */
+  w?: number;
+  d?: number;
+  h?: number;
 }
 
 export type ViewMode = "2d" | "3d" | "walk";

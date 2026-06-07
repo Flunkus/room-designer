@@ -112,6 +112,23 @@ function HouseMenu() {
   );
 }
 
+/** Editable name of the whole house/project — click to rename; persists with the scene. */
+function HouseNameField() {
+  const houseName = useStore((s) => s.houseName);
+  const setHouseName = useStore((s) => s.setHouseName);
+  return (
+    <input
+      value={houseName}
+      onChange={(e) => setHouseName(e.target.value)}
+      placeholder="Untitled house"
+      title="Name of this house — click to rename"
+      style={{ marginLeft: 2, maxWidth: 200, border: "1px solid transparent", borderRadius: 7, background: "var(--panel-3)", font: "inherit", fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", padding: "3px 9px", outline: "none", transition: "background .12s, border-color .12s" }}
+      onFocus={(e) => { e.currentTarget.style.background = "var(--panel)"; e.currentTarget.style.borderColor = "var(--border-strong)"; e.currentTarget.style.color = "var(--text)"; e.currentTarget.select(); }}
+      onBlur={(e) => { e.currentTarget.style.background = "var(--panel-3)"; e.currentTarget.style.borderColor = "transparent"; e.currentTarget.style.color = "var(--text-2)"; if (!e.currentTarget.value.trim()) setHouseName("Untitled house"); }}
+    />
+  );
+}
+
 function TopBar({ dir }: { dir: "A" | "B" }) {
   const mode = useStore((s) => s.mode);
   const setMode = useStore((s) => s.setMode);
@@ -135,7 +152,7 @@ function TopBar({ dir }: { dir: "A" | "B" }) {
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <div style={{ width: 28, height: 28, borderRadius: 7, background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}><Icon name="cube3d" size={17} /></div>
         <div style={{ fontWeight: 720, fontSize: 15, letterSpacing: "-0.01em" }}>Roomscale</div>
-        <span className="tag gray" style={{ marginLeft: 2 }}>Berowra</span>
+        <HouseNameField />
       </div>
       <div style={{ width: 1, height: 24, background: "var(--border)" }} />
       <HouseMenu />

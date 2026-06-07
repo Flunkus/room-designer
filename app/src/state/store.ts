@@ -21,6 +21,8 @@ export interface RoomState {
   materialTarget: MaterialKey;
 
   // ---- scene (persisted) ----
+  /** user-editable name of the whole house/project (the overall save). */
+  houseName: string;
   rooms: Room[];
   /** the room currently selected / edited (drives the inspector, draw + furniture target) */
   activeRoomId: string | null;
@@ -67,6 +69,7 @@ export interface RoomState {
   setFocusRoomName: (v: boolean) => void;
   selectRoom: (id: string) => void;
   renameRoom: (id: string, name: string) => void;
+  setHouseName: (name: string) => void;
   /** Open (remove) or close (restore) a room's wall by edge index. A wall on a shared
       boundary toggles the adjacent room's matching wall too, so the opening is clean. */
   toggleWall: (roomId: string, edge: number) => void;
@@ -167,6 +170,7 @@ export const useStore = create<RoomState>()(
       modal: null,
       materialTarget: "walls",
 
+      houseName: "My House",
       rooms: demo.rooms,
       activeRoomId: demo.rooms[0]?.id ?? null,
       furniture: demo.furniture,
@@ -186,7 +190,7 @@ export const useStore = create<RoomState>()(
 
       showClearance: false,
       showProxy: false,
-      proxy: { x: 420, y: 250, rot: 0 },
+      proxy: { x: 420, y: 250, rot: 0, w: 60, d: 40, h: 180 },
 
       fitTick: 0,
 
@@ -249,15 +253,29 @@ export const useStore = create<RoomState>()(
 
       selectRoom: (id) => set({ activeRoomId: id, selectedId: null, inspectorTab: "room" }),
       renameRoom: (id, name) => set((s) => ({ rooms: s.rooms.map((r) => (r.id === id ? { ...r, name } : r)) })),
+      setHouseName: (name) => set({ houseName: name }),
 
       toggleWall: (roomId, edge) => set((s) => {
         const room = s.rooms.find((r) => r.id === roomId);
         if (!room || room.polygon.length < 3) return {};
         const seg = (poly: Vec2[], i: number) => [poly[i], poly[(i + 1) % poly.length]] as const;
         const [a, b] = seg(room.polygon, edge);
-        const EPS = 3; // cm — grid-snapped shared edges line up within a few cm
-        const near = (p: Vec2, q: Vec2) => Math.abs(p.x - q.x) <= EPS && Math.abs(p.y - q.y) <= EPS;
-        const coincides = (c: Vec2, d: Vec2) => (near(a, c) && near(b, d)) || (near(a, d) && near(b, c));
+        // Two wall segments are "the same shared wall" if they're collinear and overlap by a
+        // meaningful length — so adjacent rooms pair up even when sizes differ (partial shared
+        // edge) or endpoints don't line up exactly. (Exact-match-only missed those.)
+        const sub = (p: Vec2, q: Vec2) => ({ x: p.x - q.x, y: p.y - q.y });
+        const cross = (u: Vec2, v: Vec2) => u.x * v.y - u.y * v.x;
+        const dot = (u: Vec2, v: Vec2) => u.x * v.x + u.y * v.y;
+        const ab = sub(b, a);
+        const L = Math.hypot(ab.x, ab.y) || 1;
+        const PERP_EPS = 5; // cm off the wall line still counts as the same line
+        const coincides = (c: Vec2, d: Vec2) => {
+          if (Math.abs(cross(ab, sub(c, a))) / L > PERP_EPS) return false;
+          if (Math.abs(cross(ab, sub(d, a))) / L > PERP_EPS) return false;
+          let t0 = dot(sub(c, a), ab) / L, t1 = dot(sub(d, a), ab) / L;
+          if (t0 > t1) [t0, t1] = [t1, t0];
+          return Math.min(L, t1) - Math.max(0, t0) > 5; // overlap longer than 5 cm
+        };
         const open = !(room.openWalls ?? []).includes(edge); // toggle: open if currently closed
         const apply = (cur: number[] | undefined, i: number): number[] => {
           const set = new Set(cur ?? []);
@@ -292,6 +310,7 @@ export const useStore = create<RoomState>()(
       newHouse: () => {
         const e = makeEmptyScene();
         set({
+          houseName: "My House",
           rooms: e.rooms, furniture: e.furniture, openings: e.openings, materials: e.materials,
           wallHeight: e.wallHeight, drafting: true, draftPoints: [], draftRoomId: null, tool: "draw", mode: "2d",
           selectedId: null, activeRoomId: null, inspectorTab: "room", showClearance: false, showProxy: false,
@@ -419,6 +438,7 @@ export const useStore = create<RoomState>()(
       // blob: mesh URLs and object: texture-map URLs are session-scoped — strip them so a
       // reload doesn't try to fetch dead URLs (it falls back to the placeholder box / base color).
       partialize: (s) => ({
+        houseName: s.houseName,
         rooms: s.rooms,
         activeRoomId: s.activeRoomId,
         furniture: s.furniture.map(sanitizeFurniture),
