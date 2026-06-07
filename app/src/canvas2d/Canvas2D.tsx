@@ -2,7 +2,9 @@
 import { useRef, useState, useEffect, useCallback, type CSSProperties } from "react";
 import { Icon, TYPE_ICON } from "../components/Icon";
 import { useStore } from "../state/store";
-import { area, bounds, centroid, dist, edges, pointInPoly, shade } from "../domain/geometry";
+import { area, bounds, centroid, dist, edges, shade } from "../domain/geometry";
+import { effExtent, resolveProxy, type Boxish } from "../domain/proxy";
+import { topDownImage } from "../services/topdown";
 import type { GridStyle } from "../components/Tweaks";
 import type { Vec2 } from "../domain/types";
 
@@ -25,15 +27,6 @@ type Drag =
   | { type: "move"; id: string; off: Vec2; sx: number; sy: number; started: boolean }
   | { type: "proxy"; off: Vec2 }
   | { type: "rotate"; id: string };
-
-interface Boxish { x: number; y: number; w: number; d: number; rot?: number }
-
-/** Axis-aligned half-extents, accounting for 90°/270° rotation. */
-function effExtent(o: Boxish) {
-  const r = (((o.rot || 0) % 360) + 360) % 360;
-  const swap = r === 90 || r === 270;
-  return { hw: (swap ? o.d : o.w) / 2, hd: (swap ? o.w : o.d) / 2 };
-}
 
 /** Modular snapping: pull a moving object flush against / aligned with its
     neighbours so component pieces snap together on the grid (Req 3). */
@@ -60,38 +53,6 @@ function snapModular(np: Vec2, moving: Boxish, others: Boxish[]): Vec2 {
     }
   }
   return { x: bestX <= SNAP ? Math.round(bx) : np.x, y: bestY <= SNAP ? Math.round(by) : np.y };
-}
-
-const PROXY_HW = 30, PROXY_HD = 20; // 60×40 cm half-extents
-
-/** True if p falls inside any (closed) room polygon — the walkable union of the house. */
-function pointInAnyRoom(p: Vec2, polys: Vec2[][]): boolean {
-  return polys.some((poly) => poly.length >= 3 && pointInPoly(p, poly));
-}
-
-/** Resolve the human proxy against furniture footprints + the house boundary so it
-    physically can't overlap — letting the user test whether it fits through a gap. */
-function resolveProxy(desired: Vec2, current: Vec2, furniture: Boxish[], polys: Vec2[][]): Vec2 {
-  let x = desired.x, y = desired.y;
-  // push out of any overlapping furniture box along the least-penetration axis
-  for (const o of furniture) {
-    const e = effExtent(o);
-    const dx = x - o.x, dy = y - o.y;
-    const ovx = PROXY_HW + e.hw - Math.abs(dx);
-    const ovy = PROXY_HD + e.hd - Math.abs(dy);
-    if (ovx > 0 && ovy > 0) {
-      if (ovx < ovy) x = o.x + Math.sign(dx || 1) * (PROXY_HW + e.hw);
-      else y = o.y + Math.sign(dy || 1) * (PROXY_HD + e.hd);
-    }
-  }
-  // keep the centre inside the house (any room); revert the offending axis if it leaves
-  const hasRoom = polys.some((p) => p.length >= 3);
-  if (hasRoom && !pointInAnyRoom({ x, y }, polys)) {
-    if (pointInAnyRoom({ x, y: current.y }, polys)) y = current.y;
-    else if (pointInAnyRoom({ x: current.x, y }, polys)) x = current.x;
-    else { x = current.x; y = current.y; }
-  }
-  return { x: Math.round(x), y: Math.round(y) };
 }
 
 export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: GridStyle }) {
@@ -335,15 +296,18 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
             {hasAnyRoom && s.furniture.filter((o) => !o.hidden).map((o) => {
               const sel = s.selectedId === o.id;
               const fill = o.flat ? o.color : shade(o.color, 1.08);
+              // mesh-backed objects render their true top-down silhouette instead of the box icon
+              const hasMesh = !!o.meshUrl && o.status === "ready" && !o.flat;
               return (
                 <g key={o.id} transform={`translate(${o.x} ${o.y}) rotate(${o.rot || 0})`} style={{ cursor: "move" }}
                   onPointerDown={(e) => onObjDown(e, o)}>
                   <rect x={-o.w / 2} y={-o.d / 2} width={o.w} height={o.d} rx={o.flat ? 6 : 4}
-                    fill={fill} fillOpacity={o.flat ? 0.7 : 1}
+                    fill={hasMesh ? (blueprint ? "rgba(255,255,255,0.12)" : "#f6f4f0") : fill} fillOpacity={o.flat ? 0.7 : 1}
                     stroke={sel ? accent : (blueprint ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.35)")}
                     strokeWidth={(sel ? 2.4 : 1.2) / view.zoom} />
+                  {hasMesh && <TopDownFootprint key={o.meshUrl} url={o.meshUrl!} w={o.w} d={o.d} />}
                   {!o.flat && <line x1={0} y1={-o.d / 2} x2={0} y2={-o.d / 2 + Math.min(o.d * 0.32, 22)} stroke="rgba(0,0,0,0.4)" strokeWidth={1.4 / view.zoom} />}
-                  {!o.flat && o.w * view.zoom > 38 && (
+                  {!o.flat && !hasMesh && o.w * view.zoom > 38 && (
                     <g transform={`scale(${1 / view.zoom})`} style={{ pointerEvents: "none" }}>
                       <foreignObject x={-16} y={-16} width={32} height={32}>
                         <div style={{ color: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32 }}>
@@ -455,6 +419,25 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
         </div>
       )}
     </div>
+  );
+}
+
+/** Draws an object's orthographic top-down silhouette into its W×D footprint. The
+    snapshot is rendered + cached lazily; until it's ready nothing is drawn (the box
+    fill/icon shows through). preserveAspectRatio="none" stretches the unit-footprint
+    render to the exact box, matching the 3D view's non-uniform scaling. */
+function TopDownFootprint({ url, w, d }: { url: string; w: number; d: number }) {
+  // Keyed by url at the call site, so a url change remounts this and resets src to null.
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    topDownImage(url).then((data) => { if (alive) setSrc(data); });
+    return () => { alive = false; };
+  }, [url]);
+  if (!src) return null;
+  return (
+    <image href={src} x={-w / 2} y={-d / 2} width={w} height={d}
+      preserveAspectRatio="none" style={{ pointerEvents: "none" }} />
   );
 }
 

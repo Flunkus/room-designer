@@ -1,5 +1,5 @@
 /* ===== SceneRoot — R3F canvas, lighting, camera, orbit controls, fit + FOV ===== */
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import * as THREE from "three";
@@ -101,6 +101,8 @@ export function SceneRoot({ bare }: { bare?: boolean }) {
   const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#3b82f6";
 
   const apiRef = useRef<OrbitApi | null>(null);
+  // suspends orbit while the human proxy is being dragged across the floor
+  const [proxyDragging, setProxyDragging] = useState(false);
   const closedRooms = rooms.filter((r) => r.closed && r.polygon.length >= 3);
   const hasRoom = closedRooms.length > 0;
 
@@ -128,10 +130,10 @@ export function SceneRoot({ bare }: { bare?: boolean }) {
             ))}
             <FurnitureLayer furniture={furniture} selectedId={selectedId} accent={accent} onSelect={select} />
             {showClearance && <ClearanceLayer furniture={furniture} />}
-            {showProxy && <HumanProxy proxy={proxy} accent={accent} />}
+            {showProxy && <HumanProxy proxy={proxy} accent={accent} onDragChange={setProxyDragging} />}
           </>
         )}
-        <OrbitControls makeDefault enableDamping dampingFactor={0.12} maxPolarAngle={Math.PI / 2 - 0.02} minDistance={0.8} maxDistance={60} />
+        <OrbitControls makeDefault enabled={!proxyDragging} enableDamping dampingFactor={0.12} maxPolarAngle={Math.PI / 2 - 0.02} minDistance={0.8} maxDistance={60} />
         <CameraRig apiRef={apiRef} />
       </Canvas>
 
