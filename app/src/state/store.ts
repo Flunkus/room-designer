@@ -8,7 +8,7 @@ import type {
 import { bounds, centroid, pointInPoly } from "../domain/geometry";
 import { uid } from "../domain/util";
 import { makeDemoScene, makeEmptyScene } from "./demoRoom";
-import { copyMesh, deleteMesh, meshObjectUrl } from "../services/meshStore";
+import { copyMesh, deleteMesh, meshObjectUrl, type LibraryEntry } from "../services/meshStore";
 
 export interface RoomState {
   // ---- view / interaction ----
@@ -87,6 +87,8 @@ export interface RoomState {
   remove: (id: string) => void;
   duplicate: (id: string) => void;
   addFurniture: (spec: { name?: string; type?: string; w: number; d: number; h: number; meshUrl?: string | null }) => string;
+  /** Place a saved library model into the active room (rehydrates its mesh from IDB). */
+  addFromLibrary: (entry: LibraryEntry) => Promise<void>;
   setFurnitureMesh: (id: string, meshUrl: string | null, status?: Furniture["status"]) => void;
   /** rebuild blob URLs for objects whose mesh bytes live in IndexedDB (call once on load). */
   rehydrateMeshes: () => void;
@@ -353,6 +355,16 @@ export const useStore = create<RoomState>()(
         };
         set((st) => ({ furniture: [...st.furniture, obj], selectedId: id, inspectorTab: "object" }));
         return id;
+      },
+
+      addFromLibrary: async (entry) => {
+        // Rehydrate a session blob URL from the library master's bytes, place the object
+        // immediately, then copy the bytes onto the instance so it stays durable on its own.
+        const url = await meshObjectUrl(entry.id);
+        const id = get().addFurniture({ name: entry.name, type: entry.type, w: entry.w, d: entry.d, h: entry.h, meshUrl: url });
+        get().patch(id, entry.color ? { meshStored: true, color: entry.color } : { meshStored: true });
+        if (!url) get().setFurnitureMesh(id, null, "error");
+        await copyMesh(entry.id, id);
       },
 
       setFurnitureMesh: (id, meshUrl, status = "ready") =>
