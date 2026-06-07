@@ -9,6 +9,7 @@ import { ObjectsPanel } from "./components/ObjectsPanel";
 import { Inspector } from "./components/Inspector";
 import { Canvas2D } from "./canvas2d/Canvas2D";
 import { FurnitureModal, TextureModal, RoomModal } from "./components/Modals";
+import { exportHouse, importHouse } from "./services/houseFile";
 import type { ViewMode } from "./domain/types";
 
 // Code-split the 3D engine (three/drei/rapier) so the 2D editor loads fast and
@@ -70,7 +71,17 @@ function HouseMenu() {
   const newHouse = useStore((s) => s.newHouse);
   const openModal = useStore((s) => s.openModal);
   const [open, setOpen] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const active = rooms.find((r) => r.id === activeRoomId);
+
+  const onImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    if (!confirm("Load this house file? It replaces the house you're working on now.")) return;
+    try { await importHouse(f); setOpen(false); }
+    catch (err) { alert("Could not import that file — " + (err instanceof Error ? err.message : String(err))); }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -105,6 +116,12 @@ function HouseMenu() {
           <hr className="divider" style={{ margin: "6px 4px" }} />
           <button onClick={() => { startDraw(); setOpen(false); }} style={item}><Icon name="pen" size={15} /> Draw a room</button>
           <button onClick={() => { openModal("room"); setOpen(false); }} style={item}><Icon name="plus" size={15} /> Rectangular room…</button>
+          <hr className="divider" style={{ margin: "6px 4px" }} />
+          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "var(--text-3)", padding: "6px 10px 4px" }}>House file</div>
+          <button onClick={() => { void exportHouse(); setOpen(false); }} style={item}><Icon name="save" size={15} /> Export house to file…</button>
+          <button onClick={() => fileRef.current?.click()} style={item}><Icon name="upload" size={15} /> Import house from file…</button>
+          <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={onImportFile} />
+          <hr className="divider" style={{ margin: "6px 4px" }} />
           <button onClick={() => { if (confirm("Start a new, empty house? This clears all rooms and furniture.")) { newHouse(); setOpen(false); } }} style={{ ...item, color: "var(--danger)" }}><Icon name="trash" size={15} /> New house</button>
         </div>
       )}
