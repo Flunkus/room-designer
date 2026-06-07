@@ -20,7 +20,7 @@ export interface WallPiece {
   center: THREE.Vector3;
 }
 
-export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: number): WallPiece[] {
+export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: number, removed?: number[]): WallPiece[] {
   if (polygon.length < 3) return [];
   const evaluator = new Evaluator();
   evaluator.useGroups = false;
@@ -29,6 +29,7 @@ export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: n
   const pieces: WallPiece[] = [];
 
   edges(polygon).forEach((e, i) => {
+    if (removed?.includes(i)) return; // wall removed (opened) — skip it entirely
     const len = e.len;
     if (len < 1) return;
     const L = len * M;
@@ -71,10 +72,10 @@ export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: n
   return pieces;
 }
 
-export function Walls({ polygon, openings, wallHeightCm, material, cutaway = true }: {
-  polygon: Vec2[]; openings: Opening[]; wallHeightCm: number; material: Material; cutaway?: boolean;
+export function Walls({ polygon, openings, wallHeightCm, material, cutaway = true, removed }: {
+  polygon: Vec2[]; openings: Opening[]; wallHeightCm: number; material: Material; cutaway?: boolean; removed?: number[];
 }) {
-  const pieces = useMemo(() => buildWalls(polygon, openings, wallHeightCm), [polygon, openings, wallHeightCm]);
+  const pieces = useMemo(() => buildWalls(polygon, openings, wallHeightCm, removed), [polygon, openings, wallHeightCm, removed]);
   const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
 
   const mat = useMemo(() => {

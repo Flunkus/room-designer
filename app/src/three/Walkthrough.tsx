@@ -132,7 +132,7 @@ function WalkColliders() {
 
   const wallPieces = useMemo(() => {
     const closed = rooms.filter((r) => r.closed && r.polygon.length >= 3);
-    return closed.flatMap((r) => buildWalls(r.polygon, openings.filter((o) => o.roomId === r.id), wallHeight));
+    return closed.flatMap((r) => buildWalls(r.polygon, openings.filter((o) => o.roomId === r.id), wallHeight, r.openWalls));
   }, [rooms, openings, wallHeight]);
   const b = useMemo(() => {
     const pts = rooms.flatMap((r) => r.polygon);
@@ -194,7 +194,7 @@ function WalkScene() {
       {closed.map((r) => (
         <group key={r.id}>
           <Floor polygon={r.polygon} material={materials.floor} />
-          <Walls polygon={r.polygon} openings={openings.filter((o) => o.roomId === r.id)} wallHeightCm={wallHeight} material={materials.walls} cutaway={false} />
+          <Walls polygon={r.polygon} openings={openings.filter((o) => o.roomId === r.id)} wallHeightCm={wallHeight} material={materials.walls} cutaway={false} removed={r.openWalls} />
         </group>
       ))}
       <FurnitureLayer furniture={furniture} selectedId={null} accent="#3b82f6" onSelect={() => {}} />

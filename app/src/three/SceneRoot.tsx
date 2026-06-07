@@ -125,7 +125,7 @@ export function SceneRoot({ bare }: { bare?: boolean }) {
             {closedRooms.map((room) => (
               <group key={room.id}>
                 <Floor polygon={room.polygon} material={materials.floor} />
-                <Walls polygon={room.polygon} openings={openings.filter((op) => op.roomId === room.id)} wallHeightCm={wallHeight} material={materials.walls} />
+                <Walls polygon={room.polygon} openings={openings.filter((op) => op.roomId === room.id)} wallHeightCm={wallHeight} material={materials.walls} removed={room.openWalls} />
               </group>
             ))}
             <FurnitureLayer furniture={furniture} selectedId={selectedId} accent={accent} onSelect={select} />

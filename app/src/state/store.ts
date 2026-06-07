@@ -67,6 +67,9 @@ export interface RoomState {
   setFocusRoomName: (v: boolean) => void;
   selectRoom: (id: string) => void;
   renameRoom: (id: string, name: string) => void;
+  /** Open (remove) or close (restore) a room's wall by edge index. A wall on a shared
+      boundary toggles the adjacent room's matching wall too, so the opening is clean. */
+  toggleWall: (roomId: string, edge: number) => void;
   removeRoom: (id: string) => void;
   newHouse: () => void;
   resetHouse: () => void;
@@ -205,8 +208,9 @@ export const useStore = create<RoomState>()(
         }
         const polygon = s.draftPoints.map((p) => ({ ...p }));
         if (s.draftRoomId) {
-          // replace only the re-traced room's polygon; keep everything else
-          const rooms = s.rooms.map((r) => (r.id === s.draftRoomId ? { ...r, closed: true, polygon } : r));
+          // replace only the re-traced room's polygon; keep everything else. Edge indices
+          // change with a new outline, so drop any removed-wall flags for this room.
+          const rooms = s.rooms.map((r) => (r.id === s.draftRoomId ? { ...r, closed: true, polygon, openWalls: [] } : r));
           return {
             rooms, furniture: reassignRooms(s.furniture, rooms),
             drafting: false, tool: "select", draftPoints: [], draftRoomId: null,
@@ -245,6 +249,33 @@ export const useStore = create<RoomState>()(
 
       selectRoom: (id) => set({ activeRoomId: id, selectedId: null, inspectorTab: "room" }),
       renameRoom: (id, name) => set((s) => ({ rooms: s.rooms.map((r) => (r.id === id ? { ...r, name } : r)) })),
+
+      toggleWall: (roomId, edge) => set((s) => {
+        const room = s.rooms.find((r) => r.id === roomId);
+        if (!room || room.polygon.length < 3) return {};
+        const seg = (poly: Vec2[], i: number) => [poly[i], poly[(i + 1) % poly.length]] as const;
+        const [a, b] = seg(room.polygon, edge);
+        const EPS = 3; // cm — grid-snapped shared edges line up within a few cm
+        const near = (p: Vec2, q: Vec2) => Math.abs(p.x - q.x) <= EPS && Math.abs(p.y - q.y) <= EPS;
+        const coincides = (c: Vec2, d: Vec2) => (near(a, c) && near(b, d)) || (near(a, d) && near(b, c));
+        const open = !(room.openWalls ?? []).includes(edge); // toggle: open if currently closed
+        const apply = (cur: number[] | undefined, i: number): number[] => {
+          const set = new Set(cur ?? []);
+          if (open) set.add(i); else set.delete(i);
+          return [...set].sort((x, y) => x - y);
+        };
+        const rooms = s.rooms.map((r) => {
+          if (r.id === roomId) return { ...r, openWalls: apply(r.openWalls, edge) };
+          if (r.polygon.length < 3) return r; // pair the matching wall of any adjacent room
+          let next = r.openWalls, changed = false;
+          for (let i = 0; i < r.polygon.length; i++) {
+            const [c, d] = seg(r.polygon, i);
+            if (coincides(c, d)) { next = apply(next, i); changed = true; }
+          }
+          return changed ? { ...r, openWalls: next } : r;
+        });
+        return { rooms };
+      }),
 
       removeRoom: (id) => set((s) => {
         const rooms = s.rooms.filter((r) => r.id !== id);

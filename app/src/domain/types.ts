@@ -91,6 +91,10 @@ export interface Room {
   closed: boolean;
   polygon: Vec2[];
   name: string;
+  /** edge indices whose wall has been removed ("opened") — e.g. to merge adjacent
+      rooms into one open-plan space. The room footprint (and thus its interior) is
+      unchanged; only the wall barrier is dropped. */
+  openWalls?: number[];
 }
 
 export interface View2D {

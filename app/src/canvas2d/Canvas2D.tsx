@@ -62,6 +62,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
   const view = s.view2d;
   const [drag, setDrag] = useState<Drag | null>(null);
   const [cursor, setCursor] = useState<Vec2 | null>(null);
+  const [hoverWall, setHoverWall] = useState<{ room: string; i: number } | null>(null);
   const drawing = s.tool === "draw";
   const GRID = s.gridSize || 25; // cm snap (user-configurable)
   const DRAG_THRESH = 4; // px before an object actually starts moving
@@ -278,9 +279,38 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
                   d={"M" + room.polygon.map((p) => p.x + " " + p.y).join(" L ") + " Z"}
                   onPointerDown={(e) => onRoomDown(e, room.id)} style={{ cursor: "pointer" }}
                   fill={active ? (blueprint ? "rgba(120,170,255,0.18)" : shade(accent, 1.86)) : (blueprint ? "rgba(255,255,255,0.06)" : "#ffffff")}
-                  stroke={active ? accent : (blueprint ? "#ffffff" : "var(--text)")}
-                  strokeWidth={(active ? 3.4 : 2.2) / view.zoom} strokeLinejoin="round" />
+                  stroke="none" />
               );
+            })}
+
+            {/* wall segments — click one to open (remove) it or restore it. Removed walls
+                show as a dashed gap; the room footprint (interior) is unchanged. */}
+            {hasAnyRoom && s.rooms.filter((r) => r.closed && r.polygon.length >= 3).flatMap((room) => {
+              const active = !s.selectedId && room.id === s.activeRoomId;
+              const removedSet = room.openWalls ?? [];
+              return edges(room.polygon).map((e, i) => {
+                const removed = removedSet.includes(i);
+                const hot = hoverWall?.room === room.id && hoverWall?.i === i;
+                const baseCol = blueprint ? "#ffffff" : "var(--text)";
+                const col = removed ? (blueprint ? "rgba(255,255,255,0.30)" : "rgba(40,40,46,0.30)") : hot || active ? accent : baseCol;
+                return (
+                  <g key={room.id + "w" + i}>
+                    <line x1={e.a.x} y1={e.a.y} x2={e.b.x} y2={e.b.y}
+                      stroke={col} strokeWidth={((removed ? 1.6 : active ? 3.4 : 2.2) + (hot ? 1.4 : 0)) / view.zoom}
+                      strokeLinecap="round" strokeLinejoin="round"
+                      strokeDasharray={removed ? `${11 / view.zoom} ${8 / view.zoom}` : undefined}
+                      style={{ pointerEvents: "none" }} />
+                    <line x1={e.a.x} y1={e.a.y} x2={e.b.x} y2={e.b.y}
+                      stroke="transparent" strokeWidth={16 / view.zoom} strokeLinecap="round" style={{ cursor: "pointer" }}
+                      onPointerEnter={() => setHoverWall({ room: room.id, i })}
+                      onPointerLeave={() => setHoverWall((h) => (h?.room === room.id && h?.i === i ? null : h))}
+                      onPointerDown={(ev) => { if (spaceRef.current || ev.button === 1) return; ev.stopPropagation(); }}
+                      onClick={(ev) => { if (movedRef.current) return; ev.stopPropagation(); s.toggleWall(room.id, i); }}>
+                      <title>{removed ? "Click to restore this wall" : "Click to remove this wall (open the space)"}</title>
+                    </line>
+                  </g>
+                );
+              });
             })}
 
             {/* clearance zones */}
