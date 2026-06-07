@@ -379,17 +379,19 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
               const sel = s.selectedId === o.id;
               const fill = o.flat ? o.color : shade(o.color, 1.08);
               // mesh-backed objects render their true top-down silhouette instead of the box icon
-              const hasMesh = !!o.meshUrl && o.status === "ready" && !o.flat;
+              const hasImage = !!o.imageUrl;
+              const hasMesh = !hasImage && !!o.meshUrl && o.status === "ready" && !o.flat;
               return (
                 <g key={o.id} transform={`translate(${o.x} ${o.y}) rotate(${o.rot || 0})`} style={{ cursor: "move" }}
                   onPointerDown={(e) => onObjDown(e, o)}>
                   <rect x={-o.w / 2} y={-o.d / 2} width={o.w} height={o.d} rx={o.flat ? 6 : 4}
-                    fill={hasMesh ? (blueprint ? "rgba(255,255,255,0.12)" : "#f6f4f0") : fill} fillOpacity={o.flat ? 0.7 : 1}
+                    fill={hasMesh || hasImage ? (blueprint ? "rgba(255,255,255,0.12)" : "#f6f4f0") : fill} fillOpacity={o.flat ? 0.7 : 1}
                     stroke={sel ? accent : (blueprint ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.35)")}
                     strokeWidth={(sel ? 2.4 : 1.2) / view.zoom} />
+                  {hasImage && <image href={o.imageUrl!} x={-o.w / 2} y={-o.d / 2} width={o.w} height={o.d} preserveAspectRatio="none" style={{ pointerEvents: "none" }} />}
                   {hasMesh && <TopDownFootprint key={o.meshUrl} url={o.meshUrl!} w={o.w} d={o.d} />}
                   {!o.flat && <line x1={0} y1={-o.d / 2} x2={0} y2={-o.d / 2 + Math.min(o.d * 0.32, 22)} stroke="rgba(0,0,0,0.4)" strokeWidth={1.4 / view.zoom} />}
-                  {!o.flat && !hasMesh && o.w * view.zoom > 38 && (
+                  {!o.flat && !hasMesh && !hasImage && o.w * view.zoom > 38 && (
                     <g transform={`scale(${1 / view.zoom})`} style={{ pointerEvents: "none" }}>
                       <foreignObject x={-16} y={-16} width={32} height={32}>
                         <div style={{ color: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32 }}>

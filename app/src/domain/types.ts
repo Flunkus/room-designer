@@ -41,6 +41,11 @@ export interface Furniture {
   /** the mesh bytes for this object live in IndexedDB keyed by its id (uploaded model or
       cached remote GLB). Persists across reload; drives rehydration (see store.rehydrateMeshes). */
   meshStored?: boolean;
+  /** URL of a flat 2D image; when present the object renders as a standing image panel
+      (w×h) instead of a box, but is still moved/rotated like any other furniture. */
+  imageUrl?: string | null;
+  /** the image bytes live in IndexedDB keyed by this id (durable, like meshStored). */
+  imageStored?: boolean;
 }
 
 export type OpeningType = "door" | "window";

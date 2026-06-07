@@ -42,7 +42,7 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
   const addFromLibrary = useStore((s) => s.addFromLibrary);
   const setFurnitureMesh = useStore((s) => s.setFurnitureMesh);
   const patch = useStore((s) => s.patch);
-  const [method, setMethod] = useState<"catalog" | "library" | "image" | "upload" | "describe">("catalog");
+  const [method, setMethod] = useState<"catalog" | "library" | "flatimage" | "image" | "upload" | "describe">("catalog");
   const [sel, setSel] = useState<string | null>(null);
   const [dims, setDims] = useState({ w: 200, d: 90, h: 80 });
   const [name, setName] = useState("New Object");
@@ -55,8 +55,12 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
   const [imgDataUrl, setImgDataUrl] = useState<string | null>(null);
   // Upload: the chosen .glb/.gltf file.
   const [modelFile, setModelFile] = useState<File | null>(null);
+  // Flat image: a PNG/JPG placed as a movable standing panel.
+  const [flatImg, setFlatImg] = useState<{ url: string; name: string } | null>(null);
+  const [flatFile, setFlatFile] = useState<File | null>(null);
   const imgInput = useRef<HTMLInputElement>(null);
   const modelInput = useRef<HTMLInputElement>(null);
+  const flatInput = useRef<HTMLInputElement>(null);
   // "My models" — durable library of generated/uploaded models.
   const [library, setLibrary] = useState<LibraryEntry[]>([]);
   const [libLoaded, setLibLoaded] = useState(false);
@@ -85,6 +89,23 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
     defaultName(f.name);
   };
 
+  const onFlatImage = (files: FileList | null) => {
+    const f = files?.[0];
+    if (!f) return;
+    setError(null);
+    if (!f.type.startsWith("image/")) { setError("Please choose an image file (PNG/JPG/WebP)."); return; }
+    if (f.size > 10 * 1024 * 1024) { setError("Image is too large (max 10 MB)."); return; }
+    if (flatImg) URL.revokeObjectURL(flatImg.url);
+    const url = URL.createObjectURL(f);
+    setFlatImg({ url, name: f.name });
+    setFlatFile(f);
+    // size the panel from the image's aspect ratio (default 120 cm wide)
+    const probe = new Image();
+    probe.onload = () => { const aspect = probe.naturalHeight / (probe.naturalWidth || 1); setDims({ w: 120, d: 10, h: Math.max(10, Math.round(120 * aspect)) }); };
+    probe.src = url;
+    defaultName(f.name);
+  };
+
   const onModel = (files: FileList | null) => {
     const f = files?.[0];
     if (!f) return;
@@ -103,9 +124,28 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
     setParsing(false); setParsed(true);
   };
 
-  const canAdd = method === "upload" ? !!modelFile : method === "image" ? !!imgDataUrl : method === "library" ? false : true;
+  const canAdd = method === "upload" ? !!modelFile : method === "image" ? !!imgDataUrl : method === "flatimage" ? !!flatFile : method === "library" ? false : true;
 
   const add = async () => {
+    // 0) Flat image: a movable standing image panel (placed like furniture).
+    if (method === "flatimage") {
+      if (!flatFile) return;
+      try {
+        const bytes = await flatFile.arrayBuffer();
+        const mime = flatFile.type || "image/png";
+        const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+        const id = addFurniture({ name, type: "image", w: dims.w, d: dims.d, h: dims.h, imageUrl: url });
+        await putMesh(id, bytes, mime, flatFile.name);
+        patch(id, { imageStored: true });
+      } catch (err) {
+        console.warn("[flatimage] could not read image:", err);
+        setError("Could not read that image.");
+        return;
+      }
+      onClose();
+      return;
+    }
+
     // 1) Upload a model: bytes are in hand → place immediately (status ready), persist to IDB.
     if (method === "upload") {
       if (!modelFile) return;
@@ -168,9 +208,10 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
         <div style={{ width: 190, padding: 12, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 3 }}>
           {tab("catalog", "folder", "Catalog")}
           {tab("library", "cube3d", "My models")}
-          {tab("image", "image", "Image → 3D")}
+          {tab("flatimage", "image", "Flat image")}
+          {tab("image", "sparkle", "Image → 3D")}
           {tab("upload", "box", "Upload model")}
-          {tab("describe", "sparkle", "Describe (AI)")}
+          {tab("describe", "pen", "Describe (AI)")}
           <div style={{ marginTop: "auto", padding: 10, background: "var(--panel-3)", borderRadius: 8, fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.5 }}>
             <strong style={{ color: "var(--text)" }}>Modular tip:</strong> build an L-sofa by snapping separate scaled pieces, not stretching one mesh.
           </div>
@@ -222,6 +263,29 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
                       </button>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {method === "flatimage" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>Add a flat PNG/JPG as a standing image panel you can move and rotate like furniture — handy for a view across a shared wall, a backdrop, or artwork.</p>
+              <input ref={flatInput} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => onFlatImage(e.target.files)} />
+              {!flatImg ? (
+                <button onClick={() => flatInput.current?.click()} style={{ border: "1.5px dashed var(--border-strong)", borderRadius: 12, background: "var(--panel-2)", padding: "30px 20px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: "var(--text-2)" }}>
+                  <Icon name="image" size={26} />
+                  <div style={{ fontSize: 13.5, fontWeight: 560, color: "var(--text)" }}>Click to upload an image</div>
+                  <div style={{ fontSize: 12 }}>PNG, JPG or WebP · max 10 MB</div>
+                </button>
+              ) : (
+                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  <div style={{ width: 120, height: 90, borderRadius: 8, background: `var(--panel-3) url(${flatImg.url}) center/contain no-repeat`, border: "1px solid var(--border-strong)" }} />
+                  <div style={{ flex: 1 }}>
+                    <span className="tag green"><Icon name="check" size={12} /> Image ready</span>
+                    <p style={{ fontSize: 12.5, color: "var(--text-2)", margin: "8px 0 0", lineHeight: 1.5 }}>On <strong>Add</strong> it's placed standing on the floor — drag and rotate it like any object. Resize with the W/H boxes.</p>
+                    <button className="btn sm ghost" onClick={() => flatInput.current?.click()} style={{ marginTop: 8 }}>Choose another</button>
+                  </div>
                 </div>
               )}
             </div>

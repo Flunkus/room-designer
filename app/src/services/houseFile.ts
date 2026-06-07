@@ -45,7 +45,7 @@ export async function exportHouse(): Promise<void> {
   const s = useStore.getState();
   const meshes: Record<string, StoredMeshB64> = {};
   for (const f of s.furniture) {
-    if (!f.meshStored) continue;
+    if (!f.meshStored && !f.imageStored) continue; // bytes keyed by furniture id (GLB or image)
     const m = await getMesh(f.id);
     if (m) meshes[f.id] = { mime: m.mime, name: m.name, bytes: abToB64(m.bytes) };
   }
@@ -62,7 +62,11 @@ export async function exportHouse(): Promise<void> {
       rooms: s.rooms,
       activeRoomId: s.activeRoomId,
       // drop session blob URLs — the bytes travel in `meshes` and rehydrate on import
-      furniture: s.furniture.map((f) => ({ ...f, meshUrl: f.meshStored || ephemeral(f.meshUrl) ? null : f.meshUrl })),
+      furniture: s.furniture.map((f) => ({
+        ...f,
+        meshUrl: f.meshStored || ephemeral(f.meshUrl) ? null : f.meshUrl,
+        imageUrl: f.imageStored || ephemeral(f.imageUrl) ? null : f.imageUrl,
+      })),
       openings: s.openings,
       wallImages: s.wallImages.map((w) => ({ ...w, url: w.stored || ephemeral(w.url) ? null : w.url })),
       materials: s.materials,
@@ -99,7 +103,11 @@ export async function importHouse(file: File): Promise<void> {
     houseName: h.houseName ?? "Imported house",
     rooms: h.rooms ?? [],
     activeRoomId: h.activeRoomId ?? (h.rooms?.[0]?.id ?? null),
-    furniture: (h.furniture ?? []).map((f) => ({ ...f, meshUrl: f.meshStored || ephemeral(f.meshUrl) ? null : f.meshUrl })),
+    furniture: (h.furniture ?? []).map((f) => ({
+      ...f,
+      meshUrl: f.meshStored || ephemeral(f.meshUrl) ? null : f.meshUrl,
+      imageUrl: f.imageStored || ephemeral(f.imageUrl) ? null : f.imageUrl,
+    })),
     openings: h.openings ?? [],
     wallImages: (h.wallImages ?? []).map((w) => ({ ...w, url: w.stored || ephemeral(w.url) ? null : w.url })),
     materials: h.materials ?? cur.materials,

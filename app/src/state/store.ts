@@ -96,7 +96,7 @@ export interface RoomState {
   patchMaterial: (k: MaterialKey, p: Partial<SceneState["materials"][MaterialKey]>) => void;
   remove: (id: string) => void;
   duplicate: (id: string) => void;
-  addFurniture: (spec: { name?: string; type?: string; w: number; d: number; h: number; meshUrl?: string | null }) => string;
+  addFurniture: (spec: { name?: string; type?: string; w: number; d: number; h: number; meshUrl?: string | null; imageUrl?: string | null }) => string;
   /** Place a saved library model into the active room (rehydrates its mesh from IDB). */
   addFromLibrary: (entry: LibraryEntry) => Promise<void>;
   setFurnitureMesh: (id: string, meshUrl: string | null, status?: Furniture["status"]) => void;
@@ -120,9 +120,10 @@ function sanitizeFurniture(o: Furniture): Furniture {
   // meshStored objects keep their bytes in IndexedDB — drop the (session/expiring) URL so
   // rehydrateMeshes repopulates a fresh blob URL on load instead of flashing a dead one.
   const meshUrl = o.meshStored || isEphemeral(o.meshUrl) ? null : o.meshUrl;
+  const imageUrl = o.imageStored || isEphemeral(o.imageUrl) ? null : o.imageUrl;
   // drop in-flight generation state and dead blob meshes back to a stable box
   const status: Furniture["status"] = o.status === "generating" ? "ready" : o.status;
-  return { ...o, meshUrl, status };
+  return { ...o, meshUrl, imageUrl, status };
 }
 
 function sanitizeWallImages(list: WallImage[]): WallImage[] {
@@ -389,7 +390,7 @@ export const useStore = create<RoomState>()(
       remove: (id) => set((s) => {
         // drop any IndexedDB-backed mesh bytes for the object + its children (fire-and-forget)
         for (const o of s.furniture) {
-          if ((o.id === id || o.parent === id) && o.meshStored) void deleteMesh(o.id);
+          if ((o.id === id || o.parent === id) && (o.meshStored || o.imageStored)) void deleteMesh(o.id);
         }
         return {
           furniture: s.furniture.filter((o) => o.id !== id && o.parent !== id),
@@ -403,7 +404,7 @@ export const useStore = create<RoomState>()(
         const n: Furniture = { ...o, id: uid("f"), name: o.name + " copy", x: o.x + 40, y: o.y + 40, parent: null };
         n.roomId = roomIdAt({ x: n.x, y: n.y }, s.rooms) ?? o.roomId ?? null;
         // the copy shares the in-session blob URL, but needs its own IDB entry to survive reload
-        if (o.meshStored) void copyMesh(o.id, n.id);
+        if (o.meshStored || o.imageStored) void copyMesh(o.id, n.id);
         return { furniture: [...s.furniture, n], selectedId: n.id, inspectorTab: "object" };
       }),
 
@@ -417,8 +418,9 @@ export const useStore = create<RoomState>()(
           id, name: spec.name || "Object", type: spec.type || "box",
           x: Math.round(c.x), y: Math.round(c.y), rot: 0,
           w: spec.w, d: spec.d, h: spec.h, color: "#b0a9a0",
-          status: spec.meshUrl ? "ready" : "generating",
+          status: spec.meshUrl || spec.imageUrl ? "ready" : "generating",
           meshUrl: spec.meshUrl ?? null,
+          imageUrl: spec.imageUrl ?? null,
           roomId: room?.id ?? null,
         };
         set((st) => ({ furniture: [...st.furniture, obj], selectedId: id, inspectorTab: "object" }));
@@ -440,8 +442,12 @@ export const useStore = create<RoomState>()(
 
       rehydrateMeshes: () => {
         for (const o of get().furniture) {
-          if (!o.meshStored || o.meshUrl) continue;
-          void meshObjectUrl(o.id).then((url) => { if (url) get().setFurnitureMesh(o.id, url, "ready"); });
+          if (o.meshStored && !o.meshUrl) {
+            void meshObjectUrl(o.id).then((url) => { if (url) get().setFurnitureMesh(o.id, url, "ready"); });
+          }
+          if (o.imageStored && !o.imageUrl) {
+            void meshObjectUrl(o.id).then((url) => { if (url) get().patch(o.id, { imageUrl: url }); });
+          }
         }
         // rebuild blob URLs for wall images whose bytes live in IndexedDB
         for (const wi of get().wallImages) {
