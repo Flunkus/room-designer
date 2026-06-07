@@ -78,6 +78,7 @@ function ObjInspector({ o }: { o: Furniture }) {
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <NumField label="X" value={o.x} unit="cm" onChange={(v) => s.moveFurniture(o.id, { x: v })} />
           <NumField label="Y" value={o.y} unit="cm" onChange={(v) => s.moveFurniture(o.id, { y: v })} />
+          <NumField label="Z" value={o.localZ ?? 0} unit="cm" onChange={(v) => s.patch(o.id, { localZ: v })} />
         </div>
         <Slider label="Rotation" value={Math.round(o.rot || 0)} min={0} max={345} step={15} unit="°" onChange={(v) => s.moveFurniture(o.id, { rot: v })} />
       </Section>

@@ -32,7 +32,9 @@ export interface Resolved extends Furniture {
     pushed to the parent's front edge, lifted to localZ (or the parent's top),
     with the offset rotated into the parent's frame so it follows rotation too. */
 export function resolve(o: Furniture, all: Furniture[]): Resolved {
-  if (!o.parent) return { ...o, z0: 0 };
+  // floor objects sit at z0 = their Z transform (localZ, default 0); nested objects
+  // resolve against the parent below.
+  if (!o.parent) return { ...o, z0: o.localZ ?? 0 };
   const p = all.find((f) => f.id === o.parent);
   if (!p) return { ...o, z0: 0 };
   const offX = 0;
