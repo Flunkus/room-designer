@@ -1,5 +1,5 @@
 /* ===== SceneRoot — R3F canvas, lighting, camera, orbit controls, fit + FOV ===== */
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import * as THREE from "three";
@@ -10,6 +10,7 @@ import { Floor } from "./Floor";
 import { Walls } from "./Walls";
 import { FurnitureLayer } from "./FurnitureMesh";
 import { ClearanceLayer } from "./ClearanceZone";
+import { WallImages } from "./WallImages";
 import { HumanProxy } from "./HumanProxy";
 import { Icon } from "../components/Icon";
 import { Slider } from "../components/fields";
@@ -59,7 +60,8 @@ function CameraRig({ apiRef }: { apiRef: React.MutableRefObject<OrbitApi | null>
     }
   }, [scene, camera, controls]);
 
-  // (re)fit on mount, room change, and explicit fit requests
+  // (re)fit on mount, room change, and explicit fit requests. The scene stays mounted
+  // across Plan↔3D switches (see App), so the camera is naturally preserved between them.
   useEffect(() => {
     fitCamera(camera, controls, housePts, wallHeight);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -91,22 +93,28 @@ export function SceneRoot({ bare }: { bare?: boolean }) {
   const materials = useStore((s) => s.materials);
   const wallHeight = useStore((s) => s.wallHeight);
   const furniture = useStore((s) => s.furniture);
+  const wallImages = useStore((s) => s.wallImages);
   const selectedId = useStore((s) => s.selectedId);
   const select = useStore((s) => s.select);
   const fov = useStore((s) => s.view3d.fov);
   const setFov = useStore((s) => s.setFov);
+  const mode = useStore((s) => s.mode);
   const showClearance = useStore((s) => s.showClearance);
   const showProxy = useStore((s) => s.showProxy);
   const proxy = useStore((s) => s.proxy);
   const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#3b82f6";
 
   const apiRef = useRef<OrbitApi | null>(null);
+  // suspends orbit while the human proxy is being dragged across the floor
+  const [proxyDragging, setProxyDragging] = useState(false);
   const closedRooms = rooms.filter((r) => r.closed && r.polygon.length >= 3);
   const hasRoom = closedRooms.length > 0;
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg,#eef0f2,#e4e6e9)" }}>
-      <Canvas shadows dpr={[1, 2]} onPointerMissed={() => select(null)} gl={{ antialias: true }}>
+      {/* stays mounted across Plan↔3D (so the camera is preserved); pause its render
+          loop while it's hidden to avoid wasting GPU on the 2D plan. */}
+      <Canvas shadows dpr={[1, 2]} frameloop={mode === "3d" ? "always" : "never"} onPointerMissed={() => select(null)} gl={{ antialias: true }}>
         <color attach="background" args={["#e9ebee"]} />
         <PerspectiveCamera makeDefault fov={fov} near={0.05} far={500} position={[6, 5, 6]} />
         <hemisphereLight args={["#ffffff", "#cfcabd", 0.55]} />
@@ -123,15 +131,16 @@ export function SceneRoot({ bare }: { bare?: boolean }) {
             {closedRooms.map((room) => (
               <group key={room.id}>
                 <Floor polygon={room.polygon} material={materials.floor} />
-                <Walls polygon={room.polygon} openings={openings.filter((op) => op.roomId === room.id)} wallHeightCm={wallHeight} material={materials.walls} />
+                <Walls polygon={room.polygon} openings={openings.filter((op) => op.roomId === room.id)} wallHeightCm={wallHeight} material={materials.walls} removed={room.openWalls} />
               </group>
             ))}
             <FurnitureLayer furniture={furniture} selectedId={selectedId} accent={accent} onSelect={select} />
+            <WallImages rooms={closedRooms} wallImages={wallImages} />
             {showClearance && <ClearanceLayer furniture={furniture} />}
-            {showProxy && <HumanProxy proxy={proxy} accent={accent} />}
+            {showProxy && <HumanProxy proxy={proxy} accent={accent} onDragChange={setProxyDragging} />}
           </>
         )}
-        <OrbitControls makeDefault enableDamping dampingFactor={0.12} maxPolarAngle={Math.PI / 2 - 0.02} minDistance={0.8} maxDistance={60} />
+        <OrbitControls makeDefault enabled={!proxyDragging} enableDamping dampingFactor={0.12} maxPolarAngle={Math.PI / 2 - 0.02} minDistance={0.8} maxDistance={60} />
         <CameraRig apiRef={apiRef} />
       </Canvas>
 

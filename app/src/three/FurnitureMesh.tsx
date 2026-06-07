@@ -5,7 +5,7 @@
    the placeholder→mesh swap of Req 3, plus the dimension-scaling requirement. */
 import { Component, Suspense, useMemo, type ReactNode } from "react";
 import * as THREE from "three";
-import { Edges, useGLTF } from "@react-three/drei";
+import { Edges, useGLTF, useTexture } from "@react-three/drei";
 import type { ThreeEvent } from "@react-three/fiber";
 import type { Furniture } from "../domain/types";
 import { M, yRotation, resolve, type Resolved } from "./coords";
@@ -58,6 +58,17 @@ function GltfModel({ url, w, d, h }: { url: string; w: number; d: number; h: num
   return <primitive object={obj} />;
 }
 
+/** A flat 2D image rendered as a standing, unlit, double-sided panel (w×h). */
+function ImagePanel({ url, w, h }: { url: string; w: number; h: number }) {
+  const tex = useTexture(url);
+  return (
+    <mesh>
+      <planeGeometry args={[w * M, h * M]} />
+      <meshBasicMaterial map={tex} side={THREE.DoubleSide} transparent toneMapped={false} />
+    </mesh>
+  );
+}
+
 function SelectionBox({ w, h, d, color }: { w: number; h: number; d: number; color: string }) {
   return (
     <mesh>
@@ -72,7 +83,8 @@ function FurnitureItem({ o, selected, accent, onSelect }: {
   o: Resolved; selected: boolean; accent: string; onSelect: (id: string) => void;
 }) {
   const generating = o.status === "generating";
-  const showMesh = !!o.meshUrl && o.status === "ready";
+  const showImage = !!o.imageUrl;
+  const showMesh = !showImage && !!o.meshUrl && o.status === "ready";
 
   const cx = o.x * M;
   const cy = (o.z0 + o.h / 2) * M;
@@ -84,7 +96,13 @@ function FurnitureItem({ o, selected, accent, onSelect }: {
       rotation={[0, yRotation(o.rot || 0), 0]}
       onPointerDown={(e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); onSelect(o.id); }}
     >
-      {showMesh ? (
+      {showImage ? (
+        <MeshErrorBoundary fallback={<PlaceholderBox o={o} />}>
+          <Suspense fallback={<PlaceholderBox o={o} />}>
+            <ImagePanel url={o.imageUrl!} w={o.w} h={o.h} />
+          </Suspense>
+        </MeshErrorBoundary>
+      ) : showMesh ? (
         <MeshErrorBoundary fallback={<PlaceholderBox o={o} />}>
           <Suspense fallback={<PlaceholderBox o={o} />}>
             <GltfModel url={o.meshUrl!} w={o.w} d={o.d} h={o.h} />

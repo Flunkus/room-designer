@@ -2,7 +2,10 @@
 import { useRef, useState, useEffect, useCallback, type CSSProperties } from "react";
 import { Icon, TYPE_ICON } from "../components/Icon";
 import { useStore } from "../state/store";
-import { area, bounds, centroid, dist, edges, pointInPoly, shade } from "../domain/geometry";
+import { area, bounds, centroid, dist, edges, shade } from "../domain/geometry";
+import { effExtent, resolveProxy, proxyHalf, type Boxish } from "../domain/proxy";
+import { topDownImage } from "../services/topdown";
+import { putMesh } from "../services/meshStore";
 import type { GridStyle } from "../components/Tweaks";
 import type { Vec2 } from "../domain/types";
 
@@ -25,15 +28,6 @@ type Drag =
   | { type: "move"; id: string; off: Vec2; sx: number; sy: number; started: boolean }
   | { type: "proxy"; off: Vec2 }
   | { type: "rotate"; id: string };
-
-interface Boxish { x: number; y: number; w: number; d: number; rot?: number }
-
-/** Axis-aligned half-extents, accounting for 90°/270° rotation. */
-function effExtent(o: Boxish) {
-  const r = (((o.rot || 0) % 360) + 360) % 360;
-  const swap = r === 90 || r === 270;
-  return { hw: (swap ? o.d : o.w) / 2, hd: (swap ? o.w : o.d) / 2 };
-}
 
 /** Modular snapping: pull a moving object flush against / aligned with its
     neighbours so component pieces snap together on the grid (Req 3). */
@@ -62,38 +56,6 @@ function snapModular(np: Vec2, moving: Boxish, others: Boxish[]): Vec2 {
   return { x: bestX <= SNAP ? Math.round(bx) : np.x, y: bestY <= SNAP ? Math.round(by) : np.y };
 }
 
-const PROXY_HW = 30, PROXY_HD = 20; // 60×40 cm half-extents
-
-/** True if p falls inside any (closed) room polygon — the walkable union of the house. */
-function pointInAnyRoom(p: Vec2, polys: Vec2[][]): boolean {
-  return polys.some((poly) => poly.length >= 3 && pointInPoly(p, poly));
-}
-
-/** Resolve the human proxy against furniture footprints + the house boundary so it
-    physically can't overlap — letting the user test whether it fits through a gap. */
-function resolveProxy(desired: Vec2, current: Vec2, furniture: Boxish[], polys: Vec2[][]): Vec2 {
-  let x = desired.x, y = desired.y;
-  // push out of any overlapping furniture box along the least-penetration axis
-  for (const o of furniture) {
-    const e = effExtent(o);
-    const dx = x - o.x, dy = y - o.y;
-    const ovx = PROXY_HW + e.hw - Math.abs(dx);
-    const ovy = PROXY_HD + e.hd - Math.abs(dy);
-    if (ovx > 0 && ovy > 0) {
-      if (ovx < ovy) x = o.x + Math.sign(dx || 1) * (PROXY_HW + e.hw);
-      else y = o.y + Math.sign(dy || 1) * (PROXY_HD + e.hd);
-    }
-  }
-  // keep the centre inside the house (any room); revert the offending axis if it leaves
-  const hasRoom = polys.some((p) => p.length >= 3);
-  if (hasRoom && !pointInAnyRoom({ x, y }, polys)) {
-    if (pointInAnyRoom({ x, y: current.y }, polys)) y = current.y;
-    else if (pointInAnyRoom({ x: current.x, y }, polys)) x = current.x;
-    else { x = current.x; y = current.y; }
-  }
-  return { x: Math.round(x), y: Math.round(y) };
-}
-
 export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: GridStyle }) {
   const s = useStore();
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -101,6 +63,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
   const view = s.view2d;
   const [drag, setDrag] = useState<Drag | null>(null);
   const [cursor, setCursor] = useState<Vec2 | null>(null);
+  const [hoverWall, setHoverWall] = useState<{ room: string; i: number } | null>(null);
   const drawing = s.tool === "draw";
   const GRID = s.gridSize || 25; // cm snap (user-configurable)
   const DRAG_THRESH = 4; // px before an object actually starts moving
@@ -127,6 +90,30 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
   }, []);
   const wantsPan = (e: React.PointerEvent | PointerEvent) => spaceRef.current || (e as PointerEvent).button === 1;
   const movedRef = useRef(false);
+
+  // ---- wall images: pick a wall, then upload an image to apply to it ----
+  const wallImgInput = useRef<HTMLInputElement>(null);
+  const pendingImgTarget = useRef<{ roomId: string; wall: number } | null>(null);
+  const onWallImageFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    const tgt = pendingImgTarget.current;
+    pendingImgTarget.current = null;
+    s.setPendingWallImage(false);
+    if (!f || !tgt || !f.type.startsWith("image/")) return;
+    const room = s.rooms.find((r) => r.id === tgt.roomId);
+    if (!room) return;
+    const edge = edges(room.polygon)[tgt.wall];
+    const edgeLen = edge?.len ?? 200;
+    const width = Math.min(160, Math.max(40, edgeLen - 20));
+    const offset = Math.max(0, Math.round((edgeLen - width) / 2));
+    const url = URL.createObjectURL(f);
+    const id = s.addWallImage({ roomId: tgt.roomId, wall: tgt.wall, offset, sill: 80, width: Math.round(width), height: Math.round(width * 0.8), url, name: f.name });
+    try {
+      await putMesh(id, await f.arrayBuffer(), f.type || "image/png", f.name);
+      s.patchWallImage(id, { stored: true });
+    } catch (err) { console.warn("[wallImage] could not persist", err); }
+  };
 
   // ---- draw-mode keys: Esc cancels, Enter closes the loop ----
   useEffect(() => {
@@ -233,7 +220,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
         const wpt = toWorld(e.clientX, e.clientY);
         const desired = { x: wpt.x - drag.off.x, y: wpt.y - drag.off.y };
         const others = s.furniture.filter((f) => !f.flat && !f.hidden);
-        const adj = resolveProxy(desired, s.proxy, others, s.rooms.map((r) => r.polygon));
+        const adj = resolveProxy(desired, s.proxy, others, s.rooms.map((r) => r.polygon), proxyHalf(s.proxy));
         s.setProxy(adj);
       } else if (drag.type === "rotate") {
         const o = s.furniture.find((f) => f.id === drag.id);
@@ -317,8 +304,64 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
                   d={"M" + room.polygon.map((p) => p.x + " " + p.y).join(" L ") + " Z"}
                   onPointerDown={(e) => onRoomDown(e, room.id)} style={{ cursor: "pointer" }}
                   fill={active ? (blueprint ? "rgba(120,170,255,0.18)" : shade(accent, 1.86)) : (blueprint ? "rgba(255,255,255,0.06)" : "#ffffff")}
-                  stroke={active ? accent : (blueprint ? "#ffffff" : "var(--text)")}
-                  strokeWidth={(active ? 3.4 : 2.2) / view.zoom} strokeLinejoin="round" />
+                  stroke="none" />
+              );
+            })}
+
+            {/* wall segments — click one to open (remove) it or restore it. Removed walls
+                show as a dashed gap; the room footprint (interior) is unchanged. */}
+            {hasAnyRoom && s.rooms.filter((r) => r.closed && r.polygon.length >= 3).flatMap((room) => {
+              const active = !s.selectedId && room.id === s.activeRoomId;
+              const removedSet = room.openWalls ?? [];
+              return edges(room.polygon).map((e, i) => {
+                const removed = removedSet.includes(i);
+                const hot = hoverWall?.room === room.id && hoverWall?.i === i;
+                const baseCol = blueprint ? "#ffffff" : "var(--text)";
+                const col = removed ? (blueprint ? "rgba(255,255,255,0.30)" : "rgba(40,40,46,0.30)") : hot || active ? accent : baseCol;
+                return (
+                  <g key={room.id + "w" + i}>
+                    <line x1={e.a.x} y1={e.a.y} x2={e.b.x} y2={e.b.y}
+                      stroke={col} strokeWidth={((removed ? 1.6 : active ? 3.4 : 2.2) + (hot ? 1.4 : 0)) / view.zoom}
+                      strokeLinecap="round" strokeLinejoin="round"
+                      strokeDasharray={removed ? `${11 / view.zoom} ${8 / view.zoom}` : undefined}
+                      style={{ pointerEvents: "none" }} />
+                    <line x1={e.a.x} y1={e.a.y} x2={e.b.x} y2={e.b.y}
+                      stroke="transparent" strokeWidth={16 / view.zoom} strokeLinecap="round" style={{ cursor: "pointer" }}
+                      onPointerEnter={() => setHoverWall({ room: room.id, i })}
+                      onPointerLeave={() => setHoverWall((h) => (h?.room === room.id && h?.i === i ? null : h))}
+                      onPointerDown={(ev) => { if (spaceRef.current || ev.button === 1) return; ev.stopPropagation(); }}
+                      onClick={(ev) => {
+                        if (movedRef.current) return;
+                        ev.stopPropagation();
+                        if (s.pendingWallImage) { pendingImgTarget.current = { roomId: room.id, wall: i }; wallImgInput.current?.click(); }
+                        else s.toggleWall(room.id, i);
+                      }}>
+                      <title>{s.pendingWallImage ? "Click to place your image on this wall" : removed ? "Click to restore this wall" : "Click to remove this wall (open the space)"}</title>
+                    </line>
+                  </g>
+                );
+              });
+            })}
+
+            {/* wall image panels — marker along the wall where the image sits */}
+            {hasAnyRoom && s.wallImages.map((wi) => {
+              const room = s.rooms.find((r) => r.id === wi.roomId);
+              if (!room || room.polygon.length < 3) return null;
+              const e = edges(room.polygon)[wi.wall];
+              if (!e) return null;
+              const len = e.len || 1, ux = (e.b.x - e.a.x) / len, uy = (e.b.y - e.a.y) / len;
+              const ax = e.a.x + ux * wi.offset, ay = e.a.y + uy * wi.offset;
+              const bx = e.a.x + ux * (wi.offset + wi.width), by = e.a.y + uy * (wi.offset + wi.width);
+              const mx = (ax + bx) / 2 + e.nx * (11 / view.zoom), my = (ay + by) / 2 + e.ny * (11 / view.zoom);
+              return (
+                <g key={"wi" + wi.id} style={{ pointerEvents: "none" }}>
+                  <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#10b981" strokeWidth={5 / view.zoom} strokeLinecap="round" />
+                  <g transform={`translate(${mx} ${my}) scale(${1 / view.zoom})`}>
+                    <foreignObject x={-9} y={-9} width={18} height={18}>
+                      <div style={{ color: "#10b981", display: "flex", alignItems: "center", justifyContent: "center", width: 18, height: 18 }}><Icon name="image" size={13} /></div>
+                    </foreignObject>
+                  </g>
+                </g>
               );
             })}
 
@@ -335,15 +378,20 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
             {hasAnyRoom && s.furniture.filter((o) => !o.hidden).map((o) => {
               const sel = s.selectedId === o.id;
               const fill = o.flat ? o.color : shade(o.color, 1.08);
+              // mesh-backed objects render their true top-down silhouette instead of the box icon
+              const hasImage = !!o.imageUrl;
+              const hasMesh = !hasImage && !!o.meshUrl && o.status === "ready" && !o.flat;
               return (
                 <g key={o.id} transform={`translate(${o.x} ${o.y}) rotate(${o.rot || 0})`} style={{ cursor: "move" }}
                   onPointerDown={(e) => onObjDown(e, o)}>
                   <rect x={-o.w / 2} y={-o.d / 2} width={o.w} height={o.d} rx={o.flat ? 6 : 4}
-                    fill={fill} fillOpacity={o.flat ? 0.7 : 1}
+                    fill={hasMesh || hasImage ? (blueprint ? "rgba(255,255,255,0.12)" : "#f6f4f0") : fill} fillOpacity={o.flat ? 0.7 : 1}
                     stroke={sel ? accent : (blueprint ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.35)")}
                     strokeWidth={(sel ? 2.4 : 1.2) / view.zoom} />
+                  {hasImage && <image href={o.imageUrl!} x={-o.w / 2} y={-o.d / 2} width={o.w} height={o.d} preserveAspectRatio="none" style={{ pointerEvents: "none" }} />}
+                  {hasMesh && <TopDownFootprint key={o.meshUrl} url={o.meshUrl!} w={o.w} d={o.d} />}
                   {!o.flat && <line x1={0} y1={-o.d / 2} x2={0} y2={-o.d / 2 + Math.min(o.d * 0.32, 22)} stroke="rgba(0,0,0,0.4)" strokeWidth={1.4 / view.zoom} />}
-                  {!o.flat && o.w * view.zoom > 38 && (
+                  {!o.flat && !hasMesh && !hasImage && o.w * view.zoom > 38 && (
                     <g transform={`scale(${1 / view.zoom})`} style={{ pointerEvents: "none" }}>
                       <foreignObject x={-16} y={-16} width={32} height={32}>
                         <div style={{ color: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32 }}>
@@ -415,7 +463,7 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
           {/* human proxy */}
           {hasAnyRoom && s.showProxy && (
             <g transform={`translate(${s.proxy.x} ${s.proxy.y}) rotate(${s.proxy.rot || 0})`} style={{ cursor: "move" }} onPointerDown={onProxyDown}>
-              <rect x={-30} y={-20} width={60} height={40} rx={6} fill="rgba(59,130,246,0.18)" stroke={accent} strokeWidth={1.8 / view.zoom} />
+              <rect x={-(s.proxy.w ?? 60) / 2} y={-(s.proxy.d ?? 40) / 2} width={s.proxy.w ?? 60} height={s.proxy.d ?? 40} rx={6} fill="rgba(59,130,246,0.18)" stroke={accent} strokeWidth={1.8 / view.zoom} />
               <g transform={`scale(${1 / view.zoom})`} style={{ pointerEvents: "none" }}>
                 <foreignObject x={-13} y={-13} width={26} height={26}>
                   <div style={{ color: accent, display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 26 }}>
@@ -454,7 +502,36 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
           <button className="btn ghost sm" style={hintBtn} onClick={(e) => { e.stopPropagation(); s.cancelDraw(); }}>Cancel</button>
         </div>
       )}
+
+      {/* wall-image placement hint */}
+      {s.pendingWallImage && !drawing && (
+        <div className="draw-hint" style={hintStyle} onPointerDown={(e) => e.stopPropagation()}>
+          <Icon name="image" size={15} />
+          <span>Click a wall to place your image on it</span>
+          <button className="btn ghost sm" style={hintBtn} onClick={(e) => { e.stopPropagation(); s.setPendingWallImage(false); }}>Cancel</button>
+        </div>
+      )}
+      <input ref={wallImgInput} type="file" accept="image/*" style={{ display: "none" }} onChange={onWallImageFile} />
     </div>
+  );
+}
+
+/** Draws an object's orthographic top-down silhouette into its W×D footprint. The
+    snapshot is rendered + cached lazily; until it's ready nothing is drawn (the box
+    fill/icon shows through). preserveAspectRatio="none" stretches the unit-footprint
+    render to the exact box, matching the 3D view's non-uniform scaling. */
+function TopDownFootprint({ url, w, d }: { url: string; w: number; d: number }) {
+  // Keyed by url at the call site, so a url change remounts this and resets src to null.
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    topDownImage(url).then((data) => { if (alive) setSrc(data); });
+    return () => { alive = false; };
+  }, [url]);
+  if (!src) return null;
+  return (
+    <image href={src} x={-w / 2} y={-d / 2} width={w} height={d}
+      preserveAspectRatio="none" style={{ pointerEvents: "none" }} />
   );
 }
 

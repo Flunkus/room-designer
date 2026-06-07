@@ -3,12 +3,12 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
   Furniture, InspectorTab, MaterialKey, ModalKind, Opening, Proxy,
-  Room, SceneState, Tool, Vec2, View2D, View3D, ViewMode,
+  Room, SceneState, Tool, Vec2, View2D, View3D, ViewMode, WallImage,
 } from "../domain/types";
 import { bounds, centroid, pointInPoly } from "../domain/geometry";
 import { uid } from "../domain/util";
 import { makeDemoScene, makeEmptyScene } from "./demoRoom";
-import { copyMesh, deleteMesh, meshObjectUrl } from "../services/meshStore";
+import { copyMesh, deleteMesh, meshObjectUrl, type LibraryEntry } from "../services/meshStore";
 
 export interface RoomState {
   // ---- view / interaction ----
@@ -21,11 +21,17 @@ export interface RoomState {
   materialTarget: MaterialKey;
 
   // ---- scene (persisted) ----
+  /** user-editable name of the whole house/project (the overall save). */
+  houseName: string;
   rooms: Room[];
   /** the room currently selected / edited (drives the inspector, draw + furniture target) */
   activeRoomId: string | null;
   furniture: Furniture[];
   openings: Opening[];
+  /** 2D images applied to wall faces (windows / outdoor views / artwork). */
+  wallImages: WallImage[];
+  /** one-shot: the next wall clicked on the plan receives an uploaded image. */
+  pendingWallImage: boolean;
   materials: SceneState["materials"];
   wallHeight: number;
 
@@ -67,6 +73,10 @@ export interface RoomState {
   setFocusRoomName: (v: boolean) => void;
   selectRoom: (id: string) => void;
   renameRoom: (id: string, name: string) => void;
+  setHouseName: (name: string) => void;
+  /** Open (remove) or close (restore) a room's wall by edge index. A wall on a shared
+      boundary toggles the adjacent room's matching wall too, so the opening is clean. */
+  toggleWall: (roomId: string, edge: number) => void;
   removeRoom: (id: string) => void;
   newHouse: () => void;
   resetHouse: () => void;
@@ -86,7 +96,9 @@ export interface RoomState {
   patchMaterial: (k: MaterialKey, p: Partial<SceneState["materials"][MaterialKey]>) => void;
   remove: (id: string) => void;
   duplicate: (id: string) => void;
-  addFurniture: (spec: { name?: string; type?: string; w: number; d: number; h: number; meshUrl?: string | null }) => string;
+  addFurniture: (spec: { name?: string; type?: string; w: number; d: number; h: number; meshUrl?: string | null; imageUrl?: string | null }) => string;
+  /** Place a saved library model into the active room (rehydrates its mesh from IDB). */
+  addFromLibrary: (entry: LibraryEntry) => Promise<void>;
   setFurnitureMesh: (id: string, meshUrl: string | null, status?: Furniture["status"]) => void;
   /** rebuild blob URLs for objects whose mesh bytes live in IndexedDB (call once on load). */
   rehydrateMeshes: () => void;
@@ -94,6 +106,11 @@ export interface RoomState {
   addOpening: (o: Omit<Opening, "id">) => void;
   patchOpening: (id: string, p: Partial<Opening>) => void;
   removeOpening: (id: string) => void;
+  // wall images (2D image panels on walls)
+  addWallImage: (img: Omit<WallImage, "id">) => string;
+  patchWallImage: (id: string, p: Partial<WallImage>) => void;
+  removeWallImage: (id: string) => void;
+  setPendingWallImage: (v: boolean) => void;
 }
 
 /** session-scoped URLs (blob:) don't survive reload; data: URLs do. */
@@ -103,9 +120,15 @@ function sanitizeFurniture(o: Furniture): Furniture {
   // meshStored objects keep their bytes in IndexedDB — drop the (session/expiring) URL so
   // rehydrateMeshes repopulates a fresh blob URL on load instead of flashing a dead one.
   const meshUrl = o.meshStored || isEphemeral(o.meshUrl) ? null : o.meshUrl;
+  const imageUrl = o.imageStored || isEphemeral(o.imageUrl) ? null : o.imageUrl;
   // drop in-flight generation state and dead blob meshes back to a stable box
   const status: Furniture["status"] = o.status === "generating" ? "ready" : o.status;
-  return { ...o, meshUrl, status };
+  return { ...o, meshUrl, imageUrl, status };
+}
+
+function sanitizeWallImages(list: WallImage[]): WallImage[] {
+  // drop the session blob URL; the bytes live in IndexedDB and rehydrate on load
+  return list.map((w) => ({ ...w, url: w.stored || isEphemeral(w.url) ? null : w.url }));
 }
 
 function sanitizeMaterials(m: RoomState["materials"]): RoomState["materials"] {
@@ -162,10 +185,13 @@ export const useStore = create<RoomState>()(
       modal: null,
       materialTarget: "walls",
 
+      houseName: "My House",
       rooms: demo.rooms,
       activeRoomId: demo.rooms[0]?.id ?? null,
       furniture: demo.furniture,
       openings: demo.openings,
+      wallImages: [],
+      pendingWallImage: false,
       materials: demo.materials,
       wallHeight: demo.wallHeight,
 
@@ -181,7 +207,7 @@ export const useStore = create<RoomState>()(
 
       showClearance: false,
       showProxy: false,
-      proxy: { x: 420, y: 250, rot: 0 },
+      proxy: { x: 420, y: 250, rot: 0, w: 60, d: 40, h: 180 },
 
       fitTick: 0,
 
@@ -203,8 +229,9 @@ export const useStore = create<RoomState>()(
         }
         const polygon = s.draftPoints.map((p) => ({ ...p }));
         if (s.draftRoomId) {
-          // replace only the re-traced room's polygon; keep everything else
-          const rooms = s.rooms.map((r) => (r.id === s.draftRoomId ? { ...r, closed: true, polygon } : r));
+          // replace only the re-traced room's polygon; keep everything else. Edge indices
+          // change with a new outline, so drop any removed-wall flags for this room.
+          const rooms = s.rooms.map((r) => (r.id === s.draftRoomId ? { ...r, closed: true, polygon, openWalls: [] } : r));
           return {
             rooms, furniture: reassignRooms(s.furniture, rooms),
             drafting: false, tool: "select", draftPoints: [], draftRoomId: null,
@@ -243,13 +270,56 @@ export const useStore = create<RoomState>()(
 
       selectRoom: (id) => set({ activeRoomId: id, selectedId: null, inspectorTab: "room" }),
       renameRoom: (id, name) => set((s) => ({ rooms: s.rooms.map((r) => (r.id === id ? { ...r, name } : r)) })),
+      setHouseName: (name) => set({ houseName: name }),
+
+      toggleWall: (roomId, edge) => set((s) => {
+        const room = s.rooms.find((r) => r.id === roomId);
+        if (!room || room.polygon.length < 3) return {};
+        const seg = (poly: Vec2[], i: number) => [poly[i], poly[(i + 1) % poly.length]] as const;
+        const [a, b] = seg(room.polygon, edge);
+        // Two wall segments are "the same shared wall" if they're collinear and overlap by a
+        // meaningful length — so adjacent rooms pair up even when sizes differ (partial shared
+        // edge) or endpoints don't line up exactly. (Exact-match-only missed those.)
+        const sub = (p: Vec2, q: Vec2) => ({ x: p.x - q.x, y: p.y - q.y });
+        const cross = (u: Vec2, v: Vec2) => u.x * v.y - u.y * v.x;
+        const dot = (u: Vec2, v: Vec2) => u.x * v.x + u.y * v.y;
+        const ab = sub(b, a);
+        const L = Math.hypot(ab.x, ab.y) || 1;
+        const PERP_EPS = 5; // cm off the wall line still counts as the same line
+        const coincides = (c: Vec2, d: Vec2) => {
+          if (Math.abs(cross(ab, sub(c, a))) / L > PERP_EPS) return false;
+          if (Math.abs(cross(ab, sub(d, a))) / L > PERP_EPS) return false;
+          let t0 = dot(sub(c, a), ab) / L, t1 = dot(sub(d, a), ab) / L;
+          if (t0 > t1) [t0, t1] = [t1, t0];
+          return Math.min(L, t1) - Math.max(0, t0) > 5; // overlap longer than 5 cm
+        };
+        const open = !(room.openWalls ?? []).includes(edge); // toggle: open if currently closed
+        const apply = (cur: number[] | undefined, i: number): number[] => {
+          const set = new Set(cur ?? []);
+          if (open) set.add(i); else set.delete(i);
+          return [...set].sort((x, y) => x - y);
+        };
+        const rooms = s.rooms.map((r) => {
+          if (r.id === roomId) return { ...r, openWalls: apply(r.openWalls, edge) };
+          if (r.polygon.length < 3) return r; // pair the matching wall of any adjacent room
+          let next = r.openWalls, changed = false;
+          for (let i = 0; i < r.polygon.length; i++) {
+            const [c, d] = seg(r.polygon, i);
+            if (coincides(c, d)) { next = apply(next, i); changed = true; }
+          }
+          return changed ? { ...r, openWalls: next } : r;
+        });
+        return { rooms };
+      }),
 
       removeRoom: (id) => set((s) => {
         const rooms = s.rooms.filter((r) => r.id !== id);
+        for (const wi of s.wallImages) if (wi.roomId === id && wi.stored) void deleteMesh(wi.id);
         return {
           rooms,
           furniture: s.furniture.filter((f) => f.roomId !== id),
           openings: s.openings.filter((op) => op.roomId !== id),
+          wallImages: s.wallImages.filter((w) => w.roomId !== id),
           activeRoomId: s.activeRoomId === id ? (rooms[0]?.id ?? null) : s.activeRoomId,
           selectedId: null, inspectorTab: "room", fitTick: s.fitTick + 1,
         };
@@ -259,7 +329,8 @@ export const useStore = create<RoomState>()(
       newHouse: () => {
         const e = makeEmptyScene();
         set({
-          rooms: e.rooms, furniture: e.furniture, openings: e.openings, materials: e.materials,
+          houseName: "My House",
+          rooms: e.rooms, furniture: e.furniture, openings: e.openings, wallImages: [], pendingWallImage: false, materials: e.materials,
           wallHeight: e.wallHeight, drafting: true, draftPoints: [], draftRoomId: null, tool: "draw", mode: "2d",
           selectedId: null, activeRoomId: null, inspectorTab: "room", showClearance: false, showProxy: false,
         });
@@ -268,7 +339,7 @@ export const useStore = create<RoomState>()(
       resetHouse: () => {
         const d = makeDemoScene();
         set((s) => ({
-          rooms: d.rooms, furniture: d.furniture, openings: d.openings, materials: d.materials,
+          rooms: d.rooms, furniture: d.furniture, openings: d.openings, wallImages: [], pendingWallImage: false, materials: d.materials,
           wallHeight: d.wallHeight, drafting: false, tool: "select", draftPoints: [], draftRoomId: null,
           selectedId: null, activeRoomId: d.rooms[0]?.id ?? null, inspectorTab: "room", fitTick: s.fitTick + 1,
         }));
@@ -319,7 +390,7 @@ export const useStore = create<RoomState>()(
       remove: (id) => set((s) => {
         // drop any IndexedDB-backed mesh bytes for the object + its children (fire-and-forget)
         for (const o of s.furniture) {
-          if ((o.id === id || o.parent === id) && o.meshStored) void deleteMesh(o.id);
+          if ((o.id === id || o.parent === id) && (o.meshStored || o.imageStored)) void deleteMesh(o.id);
         }
         return {
           furniture: s.furniture.filter((o) => o.id !== id && o.parent !== id),
@@ -333,7 +404,7 @@ export const useStore = create<RoomState>()(
         const n: Furniture = { ...o, id: uid("f"), name: o.name + " copy", x: o.x + 40, y: o.y + 40, parent: null };
         n.roomId = roomIdAt({ x: n.x, y: n.y }, s.rooms) ?? o.roomId ?? null;
         // the copy shares the in-session blob URL, but needs its own IDB entry to survive reload
-        if (o.meshStored) void copyMesh(o.id, n.id);
+        if (o.meshStored || o.imageStored) void copyMesh(o.id, n.id);
         return { furniture: [...s.furniture, n], selectedId: n.id, inspectorTab: "object" };
       }),
 
@@ -347,12 +418,23 @@ export const useStore = create<RoomState>()(
           id, name: spec.name || "Object", type: spec.type || "box",
           x: Math.round(c.x), y: Math.round(c.y), rot: 0,
           w: spec.w, d: spec.d, h: spec.h, color: "#b0a9a0",
-          status: spec.meshUrl ? "ready" : "generating",
+          status: spec.meshUrl || spec.imageUrl ? "ready" : "generating",
           meshUrl: spec.meshUrl ?? null,
+          imageUrl: spec.imageUrl ?? null,
           roomId: room?.id ?? null,
         };
         set((st) => ({ furniture: [...st.furniture, obj], selectedId: id, inspectorTab: "object" }));
         return id;
+      },
+
+      addFromLibrary: async (entry) => {
+        // Rehydrate a session blob URL from the library master's bytes, place the object
+        // immediately, then copy the bytes onto the instance so it stays durable on its own.
+        const url = await meshObjectUrl(entry.id);
+        const id = get().addFurniture({ name: entry.name, type: entry.type, w: entry.w, d: entry.d, h: entry.h, meshUrl: url });
+        get().patch(id, entry.color ? { meshStored: true, color: entry.color } : { meshStored: true });
+        if (!url) get().setFurnitureMesh(id, null, "error");
+        await copyMesh(entry.id, id);
       },
 
       setFurnitureMesh: (id, meshUrl, status = "ready") =>
@@ -360,14 +442,36 @@ export const useStore = create<RoomState>()(
 
       rehydrateMeshes: () => {
         for (const o of get().furniture) {
-          if (!o.meshStored || o.meshUrl) continue;
-          void meshObjectUrl(o.id).then((url) => { if (url) get().setFurnitureMesh(o.id, url, "ready"); });
+          if (o.meshStored && !o.meshUrl) {
+            void meshObjectUrl(o.id).then((url) => { if (url) get().setFurnitureMesh(o.id, url, "ready"); });
+          }
+          if (o.imageStored && !o.imageUrl) {
+            void meshObjectUrl(o.id).then((url) => { if (url) get().patch(o.id, { imageUrl: url }); });
+          }
+        }
+        // rebuild blob URLs for wall images whose bytes live in IndexedDB
+        for (const wi of get().wallImages) {
+          if (!wi.stored || wi.url) continue;
+          void meshObjectUrl(wi.id).then((url) => { if (url) get().patchWallImage(wi.id, { url }); });
         }
       },
 
       addOpening: (o) => set((s) => ({ openings: [...s.openings, { ...o, id: uid("op") }] })),
       patchOpening: (id, p) => set((s) => ({ openings: s.openings.map((op) => (op.id === id ? { ...op, ...p } : op)) })),
       removeOpening: (id) => set((s) => ({ openings: s.openings.filter((op) => op.id !== id) })),
+
+      addWallImage: (img) => {
+        const id = uid("wi");
+        set((s) => ({ wallImages: [...s.wallImages, { ...img, id }], pendingWallImage: false }));
+        return id;
+      },
+      patchWallImage: (id, p) => set((s) => ({ wallImages: s.wallImages.map((w) => (w.id === id ? { ...w, ...p } : w)) })),
+      removeWallImage: (id) => set((s) => {
+        const wi = s.wallImages.find((w) => w.id === id);
+        if (wi?.stored) void deleteMesh(id); // drop its bytes from IndexedDB
+        return { wallImages: s.wallImages.filter((w) => w.id !== id) };
+      }),
+      setPendingWallImage: (v) => set({ pendingWallImage: v }),
     }),
     {
       name: "roomscale.scene.v1",
@@ -376,10 +480,12 @@ export const useStore = create<RoomState>()(
       // blob: mesh URLs and object: texture-map URLs are session-scoped — strip them so a
       // reload doesn't try to fetch dead URLs (it falls back to the placeholder box / base color).
       partialize: (s) => ({
+        houseName: s.houseName,
         rooms: s.rooms,
         activeRoomId: s.activeRoomId,
         furniture: s.furniture.map(sanitizeFurniture),
         openings: s.openings,
+        wallImages: sanitizeWallImages(s.wallImages),
         materials: sanitizeMaterials(s.materials),
         wallHeight: s.wallHeight,
         gridSize: s.gridSize,

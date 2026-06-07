@@ -1,5 +1,5 @@
 /* ===== Shared field controls (ported from prototype panels.jsx) ===== */
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 
 export const inpStyle: CSSProperties = {
   width: "100%", height: 34, padding: "0 26px 0 10px",
@@ -10,12 +10,18 @@ export const inpStyle: CSSProperties = {
 export function NumField({ label, value, unit, onChange, step, w }: {
   label: string; value: number; unit?: string; onChange: (v: number) => void; step?: number; w?: number;
 }) {
+  // Keep a local draft while editing so clearing the field (transient empty / partial
+  // input) doesn't immediately commit 0 and snap to the consumer's min. Only valid
+  // numbers are committed; on blur we revert the display to the live store value.
+  const [draft, setDraft] = useState<string | null>(null);
+  const display = draft != null ? draft : String(Math.round(value));
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 5, flex: w || 1 }}>
       <span className="label-xs">{label}</span>
       <span style={{ position: "relative", display: "flex", alignItems: "center" }}>
-        <input className="mono" type="number" value={Math.round(value)} step={step || 1}
-          onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+        <input className="mono" type="number" value={display} step={step || 1}
+          onChange={(e) => { setDraft(e.target.value); const n = parseFloat(e.target.value); if (!Number.isNaN(n)) onChange(n); }}
+          onBlur={() => setDraft(null)}
           style={inpStyle} />
         {unit && <span className="mono" style={{ position: "absolute", right: 9, fontSize: 11, color: "var(--text-3)", pointerEvents: "none" }}>{unit}</span>}
       </span>

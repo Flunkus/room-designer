@@ -41,6 +41,11 @@ export interface Furniture {
   /** the mesh bytes for this object live in IndexedDB keyed by its id (uploaded model or
       cached remote GLB). Persists across reload; drives rehydration (see store.rehydrateMeshes). */
   meshStored?: boolean;
+  /** URL of a flat 2D image; when present the object renders as a standing image panel
+      (w×h) instead of a box, but is still moved/rotated like any other furniture. */
+  imageUrl?: string | null;
+  /** the image bytes live in IndexedDB keyed by this id (durable, like meshStored). */
+  imageStored?: boolean;
 }
 
 export type OpeningType = "door" | "window";
@@ -60,6 +65,26 @@ export interface Opening {
   /** sill height (cm) for windows; 0 / undefined for doors (floor-anchored) */
   sill?: number;
   label?: string;
+}
+
+/** A 2D image applied to a wall face (a window view, mural, artwork…). Positioned on a
+    room's wall like an opening: edge index + offset along the wall + sill, sized w×h (cm). */
+export interface WallImage {
+  id: string;
+  roomId: string;
+  /** index into the room polygon's edge list */
+  wall: number;
+  /** distance (cm) along the wall from the edge's start vertex to the panel's near side */
+  offset: number;
+  /** height (cm) of the panel's bottom above the floor */
+  sill: number;
+  width: number;
+  height: number;
+  /** session image URL (object URL); rehydrated from IndexedDB bytes on load */
+  url?: string | null;
+  /** image bytes live in IndexedDB keyed by this id (durable across reload) */
+  stored?: boolean;
+  name?: string;
 }
 
 export type MaterialSource = "ai" | "pbr" | "swatch";
@@ -91,6 +116,10 @@ export interface Room {
   closed: boolean;
   polygon: Vec2[];
   name: string;
+  /** edge indices whose wall has been removed ("opened") — e.g. to merge adjacent
+      rooms into one open-plan space. The room footprint (and thus its interior) is
+      unchanged; only the wall barrier is dropped. */
+  openWalls?: number[];
 }
 
 export interface View2D {
@@ -114,6 +143,10 @@ export interface Proxy {
   x: number;
   y: number;
   rot: number;
+  /** footprint + height in cm (defaults: 60 × 40 × 180 — an average standing adult). */
+  w?: number;
+  d?: number;
+  h?: number;
 }
 
 export type ViewMode = "2d" | "3d" | "walk";

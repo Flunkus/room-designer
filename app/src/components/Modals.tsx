@@ -1,13 +1,14 @@
 /* ===== Furniture pipeline + texture modals (ported from prototype furniture.jsx) =====
    Phase 2 keeps the prototype's inline mock behaviour; Phase 5/6 swap in the
    real provider services (meshGen / textureGen / specParser). */
-import { useState, useRef, type ReactNode } from "react";
+import { useState, useRef, useEffect, type ReactNode } from "react";
 import { Icon, TYPE_ICON } from "./Icon";
 import { useStore } from "../state/store";
 import { CATALOG, SAMPLE_BLURB } from "../state/demoRoom";
 import { parseSpec } from "../services/specParser";
 import { generateFurnitureMesh } from "../services/meshGen";
-import { putMesh, cacheRemoteMesh } from "../services/meshStore";
+import { putMesh, getMesh, cacheRemoteMesh, listLibrary, deleteLibraryModel, type LibraryEntry } from "../services/meshStore";
+import { saveModelToLibrary } from "../services/library";
 import { generateTexture, type PBRMaps } from "../services/textureGen";
 
 function Modal({ title, sub, onClose, children, wide }: {
@@ -38,9 +39,10 @@ const ImgPlaceholder = ({ label, h }: { label: string; h?: number }) => (
 /* ---------------- Furniture pipeline ---------------- */
 export function FurnitureModal({ onClose }: { onClose: () => void }) {
   const addFurniture = useStore((s) => s.addFurniture);
+  const addFromLibrary = useStore((s) => s.addFromLibrary);
   const setFurnitureMesh = useStore((s) => s.setFurnitureMesh);
   const patch = useStore((s) => s.patch);
-  const [method, setMethod] = useState<"catalog" | "image" | "upload" | "describe">("catalog");
+  const [method, setMethod] = useState<"catalog" | "library" | "flatimage" | "image" | "upload" | "describe">("catalog");
   const [sel, setSel] = useState<string | null>(null);
   const [dims, setDims] = useState({ w: 200, d: 90, h: 80 });
   const [name, setName] = useState("New Object");
@@ -53,8 +55,20 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
   const [imgDataUrl, setImgDataUrl] = useState<string | null>(null);
   // Upload: the chosen .glb/.gltf file.
   const [modelFile, setModelFile] = useState<File | null>(null);
+  // Flat image: a PNG/JPG placed as a movable standing panel.
+  const [flatImg, setFlatImg] = useState<{ url: string; name: string } | null>(null);
+  const [flatFile, setFlatFile] = useState<File | null>(null);
   const imgInput = useRef<HTMLInputElement>(null);
   const modelInput = useRef<HTMLInputElement>(null);
+  const flatInput = useRef<HTMLInputElement>(null);
+  // "My models" — durable library of generated/uploaded models.
+  const [library, setLibrary] = useState<LibraryEntry[]>([]);
+  const [libLoaded, setLibLoaded] = useState(false);
+  const refreshLibrary = () => { listLibrary().then((e) => { setLibrary(e); setLibLoaded(true); }).catch(() => setLibLoaded(true)); };
+  useEffect(() => { if (method === "library" && !libLoaded) refreshLibrary(); }, [method, libLoaded]);
+
+  const placeLibrary = async (entry: LibraryEntry) => { await addFromLibrary(entry); onClose(); };
+  const removeLibrary = async (entry: LibraryEntry) => { await deleteLibraryModel(entry.id); setLibrary((l) => l.filter((e) => e.id !== entry.id)); };
 
   const pick = (c: typeof CATALOG[number]) => { setSel(c.id); setName(c.name); setDims({ w: c.w, d: c.d, h: c.h }); };
 
@@ -72,6 +86,23 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
     reader.onload = () => setImgDataUrl(typeof reader.result === "string" ? reader.result : null);
     reader.onerror = () => setError("Could not read that image.");
     reader.readAsDataURL(f);
+    defaultName(f.name);
+  };
+
+  const onFlatImage = (files: FileList | null) => {
+    const f = files?.[0];
+    if (!f) return;
+    setError(null);
+    if (!f.type.startsWith("image/")) { setError("Please choose an image file (PNG/JPG/WebP)."); return; }
+    if (f.size > 10 * 1024 * 1024) { setError("Image is too large (max 10 MB)."); return; }
+    if (flatImg) URL.revokeObjectURL(flatImg.url);
+    const url = URL.createObjectURL(f);
+    setFlatImg({ url, name: f.name });
+    setFlatFile(f);
+    // size the panel from the image's aspect ratio (default 120 cm wide)
+    const probe = new Image();
+    probe.onload = () => { const aspect = probe.naturalHeight / (probe.naturalWidth || 1); setDims({ w: 120, d: 10, h: Math.max(10, Math.round(120 * aspect)) }); };
+    probe.src = url;
     defaultName(f.name);
   };
 
@@ -93,9 +124,28 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
     setParsing(false); setParsed(true);
   };
 
-  const canAdd = method === "upload" ? !!modelFile : method === "image" ? !!imgDataUrl : true;
+  const canAdd = method === "upload" ? !!modelFile : method === "image" ? !!imgDataUrl : method === "flatimage" ? !!flatFile : method === "library" ? false : true;
 
   const add = async () => {
+    // 0) Flat image: a movable standing image panel (placed like furniture).
+    if (method === "flatimage") {
+      if (!flatFile) return;
+      try {
+        const bytes = await flatFile.arrayBuffer();
+        const mime = flatFile.type || "image/png";
+        const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+        const id = addFurniture({ name, type: "image", w: dims.w, d: dims.d, h: dims.h, imageUrl: url });
+        await putMesh(id, bytes, mime, flatFile.name);
+        patch(id, { imageStored: true });
+      } catch (err) {
+        console.warn("[flatimage] could not read image:", err);
+        setError("Could not read that image.");
+        return;
+      }
+      onClose();
+      return;
+    }
+
     // 1) Upload a model: bytes are in hand → place immediately (status ready), persist to IDB.
     if (method === "upload") {
       if (!modelFile) return;
@@ -106,6 +156,8 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
         const id = addFurniture({ name, type: "box", ...dims, meshUrl });
         await putMesh(id, bytes, mime, modelFile.name);
         patch(id, { meshStored: true });
+        // keep a durable copy in the reusable library (survives "New house")
+        void saveModelToLibrary({ name, ...dims, mime }, bytes, meshUrl);
       } catch (err) {
         console.warn("[upload] could not read model file:", err);
         setError("Could not read that model file.");
@@ -123,7 +175,12 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
         .then(async (job) => {
           setFurnitureMesh(id, job.meshUrl, "ready");
           // Cache the (expiring) remote GLB to IDB so it survives reload; degrade to https on CORS failure.
-          if (job.meshUrl && (await cacheRemoteMesh(id, job.meshUrl))) patch(id, { meshStored: true });
+          if (job.meshUrl && (await cacheRemoteMesh(id, job.meshUrl))) {
+            patch(id, { meshStored: true });
+            // mirror the cached bytes into the durable library so it survives "New house"
+            const stored = await getMesh(id);
+            if (stored) void saveModelToLibrary({ name, ...dims, mime: stored.mime }, stored.bytes, job.meshUrl);
+          }
         })
         .catch((err) => { console.warn("[meshGen] image→3D failed:", err); setFurnitureMesh(id, null, "error"); });
       onClose();
@@ -150,9 +207,11 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
       <div style={{ display: "flex", minHeight: 380 }}>
         <div style={{ width: 190, padding: 12, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 3 }}>
           {tab("catalog", "folder", "Catalog")}
-          {tab("image", "image", "Image → 3D")}
+          {tab("library", "cube3d", "My models")}
+          {tab("flatimage", "image", "Flat image")}
+          {tab("image", "sparkle", "Image → 3D")}
           {tab("upload", "box", "Upload model")}
-          {tab("describe", "sparkle", "Describe (AI)")}
+          {tab("describe", "pen", "Describe (AI)")}
           <div style={{ marginTop: "auto", padding: 10, background: "var(--panel-3)", borderRadius: 8, fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.5 }}>
             <strong style={{ color: "var(--text)" }}>Modular tip:</strong> build an L-sofa by snapping separate scaled pieces, not stretching one mesh.
           </div>
@@ -170,6 +229,65 @@ export function FurnitureModal({ onClose }: { onClose: () => void }) {
                   </div>
                 </button>
               ))}
+            </div>
+          )}
+
+          {method === "library" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>Models you've uploaded or generated are saved here permanently — they survive reloads and starting a <strong>New house</strong>. Click one to drop another copy into the room.</p>
+              {!libLoaded ? (
+                <div style={{ color: "var(--text-3)", fontSize: 12.5, padding: 20, textAlign: "center" }}>Loading…</div>
+              ) : library.length === 0 ? (
+                <div style={{ border: "1.5px dashed var(--border-strong)", borderRadius: 12, background: "var(--panel-2)", padding: "30px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, color: "var(--text-2)", textAlign: "center" }}>
+                  <Icon name="cube3d" size={26} />
+                  <div style={{ fontSize: 13.5, fontWeight: 560, color: "var(--text)" }}>No saved models yet</div>
+                  <div style={{ fontSize: 12 }}>Upload a <strong>.glb</strong> or generate one from an image — it'll be saved here for reuse.</div>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                  {library.map((e) => (
+                    <div key={e.id} style={{ position: "relative", border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel)", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                      <button title="Remove from library" onClick={() => removeLibrary(e)}
+                        style={{ position: "absolute", top: 6, right: 6, width: 22, height: 22, border: "none", borderRadius: 6, background: "rgba(0,0,0,0.06)", color: "var(--text-3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <Icon name="close" size={13} />
+                      </button>
+                      <button onClick={() => placeLibrary(e)} title="Add to scene"
+                        style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", textAlign: "left", display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ height: 64, borderRadius: 6, background: e.thumb ? `#f6f4f0 url(${e.thumb}) center/contain no-repeat` : "var(--panel-3)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-2)" }}>
+                          {!e.thumb && <Icon name="box" size={26} />}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.name}</div>
+                          <div className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>{Math.round(e.w)}×{Math.round(e.d)}×{Math.round(e.h)}</div>
+                        </div>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {method === "flatimage" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>Add a flat PNG/JPG as a standing image panel you can move and rotate like furniture — handy for a view across a shared wall, a backdrop, or artwork.</p>
+              <input ref={flatInput} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => onFlatImage(e.target.files)} />
+              {!flatImg ? (
+                <button onClick={() => flatInput.current?.click()} style={{ border: "1.5px dashed var(--border-strong)", borderRadius: 12, background: "var(--panel-2)", padding: "30px 20px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: "var(--text-2)" }}>
+                  <Icon name="image" size={26} />
+                  <div style={{ fontSize: 13.5, fontWeight: 560, color: "var(--text)" }}>Click to upload an image</div>
+                  <div style={{ fontSize: 12 }}>PNG, JPG or WebP · max 10 MB</div>
+                </button>
+              ) : (
+                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  <div style={{ width: 120, height: 90, borderRadius: 8, background: `var(--panel-3) url(${flatImg.url}) center/contain no-repeat`, border: "1px solid var(--border-strong)" }} />
+                  <div style={{ flex: 1 }}>
+                    <span className="tag green"><Icon name="check" size={12} /> Image ready</span>
+                    <p style={{ fontSize: 12.5, color: "var(--text-2)", margin: "8px 0 0", lineHeight: 1.5 }}>On <strong>Add</strong> it's placed standing on the floor — drag and rotate it like any object. Resize with the W/H boxes.</p>
+                    <button className="btn sm ghost" onClick={() => flatInput.current?.click()} style={{ marginTop: 8 }}>Choose another</button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

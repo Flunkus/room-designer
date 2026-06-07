@@ -9,6 +9,7 @@ import { ObjectsPanel } from "./components/ObjectsPanel";
 import { Inspector } from "./components/Inspector";
 import { Canvas2D } from "./canvas2d/Canvas2D";
 import { FurnitureModal, TextureModal, RoomModal } from "./components/Modals";
+import { exportHouse, importHouse } from "./services/houseFile";
 import type { ViewMode } from "./domain/types";
 
 // Code-split the 3D engine (three/drei/rapier) so the 2D editor loads fast and
@@ -70,7 +71,17 @@ function HouseMenu() {
   const newHouse = useStore((s) => s.newHouse);
   const openModal = useStore((s) => s.openModal);
   const [open, setOpen] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const active = rooms.find((r) => r.id === activeRoomId);
+
+  const onImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    if (!confirm("Load this house file? It replaces the house you're working on now.")) return;
+    try { await importHouse(f); setOpen(false); }
+    catch (err) { alert("Could not import that file — " + (err instanceof Error ? err.message : String(err))); }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -105,10 +116,33 @@ function HouseMenu() {
           <hr className="divider" style={{ margin: "6px 4px" }} />
           <button onClick={() => { startDraw(); setOpen(false); }} style={item}><Icon name="pen" size={15} /> Draw a room</button>
           <button onClick={() => { openModal("room"); setOpen(false); }} style={item}><Icon name="plus" size={15} /> Rectangular room…</button>
+          <hr className="divider" style={{ margin: "6px 4px" }} />
+          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "var(--text-3)", padding: "6px 10px 4px" }}>House file</div>
+          <button onClick={() => { void exportHouse(); setOpen(false); }} style={item}><Icon name="save" size={15} /> Export house to file…</button>
+          <button onClick={() => fileRef.current?.click()} style={item}><Icon name="upload" size={15} /> Import house from file…</button>
+          <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={onImportFile} />
+          <hr className="divider" style={{ margin: "6px 4px" }} />
           <button onClick={() => { if (confirm("Start a new, empty house? This clears all rooms and furniture.")) { newHouse(); setOpen(false); } }} style={{ ...item, color: "var(--danger)" }}><Icon name="trash" size={15} /> New house</button>
         </div>
       )}
     </div>
+  );
+}
+
+/** Editable name of the whole house/project — click to rename; persists with the scene. */
+function HouseNameField() {
+  const houseName = useStore((s) => s.houseName);
+  const setHouseName = useStore((s) => s.setHouseName);
+  return (
+    <input
+      value={houseName}
+      onChange={(e) => setHouseName(e.target.value)}
+      placeholder="Untitled house"
+      title="Name of this house — click to rename"
+      style={{ marginLeft: 2, maxWidth: 200, border: "1px solid transparent", borderRadius: 7, background: "var(--panel-3)", font: "inherit", fontSize: 12.5, fontWeight: 600, color: "var(--text-2)", padding: "3px 9px", outline: "none", transition: "background .12s, border-color .12s" }}
+      onFocus={(e) => { e.currentTarget.style.background = "var(--panel)"; e.currentTarget.style.borderColor = "var(--border-strong)"; e.currentTarget.style.color = "var(--text)"; e.currentTarget.select(); }}
+      onBlur={(e) => { e.currentTarget.style.background = "var(--panel-3)"; e.currentTarget.style.borderColor = "transparent"; e.currentTarget.style.color = "var(--text-2)"; if (!e.currentTarget.value.trim()) setHouseName("Untitled house"); }}
+    />
   );
 }
 
@@ -135,7 +169,7 @@ function TopBar({ dir }: { dir: "A" | "B" }) {
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <div style={{ width: 28, height: 28, borderRadius: 7, background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}><Icon name="cube3d" size={17} /></div>
         <div style={{ fontWeight: 720, fontSize: 15, letterSpacing: "-0.01em" }}>Roomscale</div>
-        <span className="tag gray" style={{ marginLeft: 2 }}>Berowra</span>
+        <HouseNameField />
       </div>
       <div style={{ width: 1, height: 24, background: "var(--border)" }} />
       <HouseMenu />
@@ -220,10 +254,20 @@ function LayoutB({ tweaks }: { tweaks: Tweaks }) {
 
 function Stage({ tweaks, bare }: { tweaks: Tweaks; bare?: boolean }) {
   const s = useStore();
+  // Once 3D has been opened, keep the scene mounted (just hidden) so flicking back to
+  // Plan and into 3D again preserves the camera/orbit exactly where you left it.
+  const [opened3d, setOpened3d] = useState(false);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot latch on first 3D open
+  useEffect(() => { if (s.mode === "3d") setOpened3d(true); }, [s.mode]);
+  const show3d = s.mode === "3d";
   return (
     <div style={{ position: bare ? "absolute" : "relative", inset: bare ? 0 : undefined, minHeight: 0, overflow: "hidden", background: "var(--canvas)" }}>
       {s.mode === "2d" && <Canvas2D accent={tweaks.accent} gridStyle={tweaks.grid} />}
-      {s.mode === "3d" && <Suspense fallback={<StageLoading label="Loading 3D engine…" />}><SceneRoot bare={bare} /></Suspense>}
+      {(show3d || opened3d) && (
+        <div style={{ position: "absolute", inset: 0, display: show3d ? "block" : "none" }}>
+          <Suspense fallback={<StageLoading label="Loading 3D engine…" />}><SceneRoot bare={bare} /></Suspense>
+        </div>
+      )}
       {s.mode === "walk" && <Suspense fallback={<StageLoading label="Loading walkthrough…" />}><Walkthrough /></Suspense>}
       {s.mode === "2d" && (
         <div style={{ position: "absolute", right: bare ? 330 : 14, bottom: 16, display: "flex", flexDirection: "column", gap: 4, background: "var(--panel)", borderRadius: 10, boxShadow: "var(--sh-2)", padding: 4, zIndex: 8 }}>

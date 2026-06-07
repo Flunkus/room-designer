@@ -1,8 +1,10 @@
 /* ===== Inspector — object + room/materials (ported from prototype panels.jsx) ===== */
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { Icon, TYPE_ICON } from "./Icon";
 import { useStore } from "../state/store";
 import { NumField, Slider, Section, Stat, Toggle, inpStyle } from "./fields";
+import { saveFurnitureToLibrary } from "../services/library";
+import { putMesh } from "../services/meshStore";
 import { area, perimeter, shapeName } from "../domain/geometry";
 import type { Furniture, Material, MaterialKey } from "../domain/types";
 
@@ -16,6 +18,41 @@ export function Inspector() {
 function ObjInspector({ o }: { o: Furniture }) {
   const s = useStore();
   const parents = s.furniture.filter((f) => f.id !== o.id && !f.parent && !f.flat);
+  // "Save to My models": stash this object's model at its current size for reuse.
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const onSaveToLibrary = async () => {
+    setSaveState("saving");
+    const ok = await saveFurnitureToLibrary(o).catch(() => false);
+    setSaveState(ok ? "saved" : "error");
+    setTimeout(() => setSaveState("idle"), 2200);
+  };
+
+  // Replace this object's box/model with an uploaded GLB (scaled to its current W×D×H).
+  const modelInput = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [modelErr, setModelErr] = useState<string | null>(null);
+  const onModelFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setModelErr(null);
+    if (!/\.(glb|gltf)$/i.test(f.name)) { setModelErr("Please choose a .glb or .gltf file."); return; }
+    if (f.size > 75 * 1024 * 1024) { setModelErr("Model is too large (max 75 MB)."); return; }
+    setUploading(true);
+    try {
+      const bytes = await f.arrayBuffer();
+      const mime = f.name.toLowerCase().endsWith(".glb") ? "model/gltf-binary" : "model/gltf+json";
+      const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+      await putMesh(o.id, bytes, mime, f.name); // durable bytes keyed by this object's id
+      s.setFurnitureMesh(o.id, url, "ready");
+      s.patch(o.id, { meshStored: true, imageUrl: null, imageStored: false });
+    } catch (err) {
+      console.warn("[replace model] could not read file:", err);
+      setModelErr("Could not read that model file.");
+    } finally {
+      setUploading(false);
+    }
+  };
   return (
     <div style={{ height: "100%", overflowY: "auto" }}>
       <div style={{ padding: "16px 16px 14px", borderBottom: "1px solid var(--border)" }}>
@@ -41,6 +78,7 @@ function ObjInspector({ o }: { o: Furniture }) {
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <NumField label="X" value={o.x} unit="cm" onChange={(v) => s.moveFurniture(o.id, { x: v })} />
           <NumField label="Y" value={o.y} unit="cm" onChange={(v) => s.moveFurniture(o.id, { y: v })} />
+          <NumField label="Z" value={o.localZ ?? 0} unit="cm" onChange={(v) => s.patch(o.id, { localZ: v })} />
         </div>
         <Slider label="Rotation" value={Math.round(o.rot || 0)} min={0} max={345} step={15} unit="°" onChange={(v) => s.moveFurniture(o.id, { rot: v })} />
       </Section>
@@ -60,6 +98,25 @@ function ObjInspector({ o }: { o: Furniture }) {
           ))}
         </div>
       </Section>
+
+      {!o.flat && !o.imageUrl && (
+        <Section title="3D model">
+          <p style={{ margin: "0 0 9px", fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>
+            {o.meshUrl ? "Replace this object's 3D model, or save it to reuse." : "Replace this box with a 3D model (.glb/.gltf) — it's scaled to fit the current W×D×H."}
+          </p>
+          <input ref={modelInput} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" style={{ display: "none" }} onChange={onModelFile} />
+          <button className="btn" style={{ width: "100%" }} disabled={uploading} onClick={() => modelInput.current?.click()}>
+            <Icon name="upload" size={15} /> {uploading ? "Loading model…" : o.meshUrl ? "Replace 3D model" : "Upload 3D model"}
+          </button>
+          {modelErr && <div style={{ marginTop: 8, fontSize: 12, color: "var(--danger)" }}>{modelErr}</div>}
+          {o.meshUrl && (
+            <button className="btn" style={{ width: "100%", marginTop: 8 }} disabled={saveState === "saving"} onClick={onSaveToLibrary}>
+              <Icon name={saveState === "saved" ? "check" : "save"} size={15} />{" "}
+              {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved to My models" : saveState === "error" ? "Couldn't save — try again" : "Save to My models"}
+            </button>
+          )}
+        </Section>
+      )}
 
       <div style={{ display: "flex", gap: 8, padding: 16 }}>
         <button className="btn" style={{ flex: 1 }} onClick={() => s.duplicate(o.id)}><Icon name="copy" size={15} /> Duplicate</button>
@@ -125,7 +182,7 @@ function RoomInspector() {
             onMouseLeave={(e) => { if (document.activeElement !== e.currentTarget) e.currentTarget.style.background = "transparent"; }} />
           <button className="icon-btn" style={{ width: 26, height: 26, flexShrink: 0 }} title="Rename room" onClick={() => { nameRef.current?.focus(); nameRef.current?.select(); }}><Icon name="pen" size={13} /></button>
         </div>
-        <div className="mono" style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2, marginLeft: -1 }}>{shape} · Berowra residence</div>
+        <div className="mono" style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2, marginLeft: -1 }}>{shape} · {s.houseName}</div>
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <Stat label="Floor area" value={a + " m²"} />
           <Stat label="Perimeter" value={perim + " m"} />
@@ -161,9 +218,44 @@ function RoomInspector() {
         </div>
       </Section>
 
+      <Section title="Wall images">
+        <p style={{ margin: "0 0 9px", fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>Apply a photo to a wall — a window view, mural or artwork. Click below, then click the wall on the plan.</p>
+        <button className="btn sm" style={{ width: "100%" }} onClick={() => { s.setPendingWallImage(true); s.setMode("2d"); }}>
+          <Icon name="image" size={14} /> Add image to a wall
+        </button>
+        {s.pendingWallImage && <div style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: "var(--accent-600)" }}>Now click a wall on the plan…</div>}
+        {s.wallImages.filter((w) => w.roomId === activeRoom.id).map((wi) => (
+          <div key={wi.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginTop: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              {wi.url && <div style={{ width: 36, height: 27, borderRadius: 4, background: `var(--panel-3) url(${wi.url}) center/cover`, border: "1px solid var(--border-strong)", flexShrink: 0 }} />}
+              <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{wi.name || "Image"}</div>
+              <button className="icon-btn" style={{ width: 24, height: 24, color: "var(--danger)", flexShrink: 0 }} title="Remove image" onClick={() => s.removeWallImage(wi.id)}><Icon name="trash" size={13} /></button>
+            </div>
+            <select value={wi.wall} onChange={(e) => s.patchWallImage(wi.id, { wall: Number(e.target.value) })} style={{ ...inpStyle, padding: "0 8px", marginBottom: 8 }}>
+              {poly.map((_, i) => <option key={i} value={i}>Wall {i + 1}</option>)}
+            </select>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <NumField label="W" value={wi.width} unit="cm" onChange={(v) => s.patchWallImage(wi.id, { width: Math.max(10, v) })} />
+              <NumField label="H" value={wi.height} unit="cm" onChange={(v) => s.patchWallImage(wi.id, { height: Math.max(10, v) })} />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <NumField label="Along" value={wi.offset} unit="cm" onChange={(v) => s.patchWallImage(wi.id, { offset: Math.max(0, v) })} />
+              <NumField label="Sill" value={wi.sill} unit="cm" onChange={(v) => s.patchWallImage(wi.id, { sill: Math.max(0, v) })} />
+            </div>
+          </div>
+        ))}
+      </Section>
+
       <Section title="Verification">
         <Toggle label="Clearance zones" sub="60 cm walking border" on={s.showClearance} onClick={() => s.toggle("showClearance")} />
-        <Toggle label="Human proxy" sub="60 × 40 × 180 cm dummy" on={s.showProxy} onClick={() => s.toggle("showProxy")} />
+        <Toggle label="Human proxy" sub={`${s.proxy.w ?? 60} × ${s.proxy.d ?? 40} × ${s.proxy.h ?? 180} cm dummy`} on={s.showProxy} onClick={() => s.toggle("showProxy")} />
+        {s.showProxy && (
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <NumField label="W" value={s.proxy.w ?? 60} unit="cm" onChange={(v) => s.setProxy({ w: Math.max(10, v) })} />
+            <NumField label="D" value={s.proxy.d ?? 40} unit="cm" onChange={(v) => s.setProxy({ d: Math.max(10, v) })} />
+            <NumField label="H" value={s.proxy.h ?? 180} unit="cm" onChange={(v) => s.setProxy({ h: Math.max(10, v) })} />
+          </div>
+        )}
       </Section>
     </div>
   );

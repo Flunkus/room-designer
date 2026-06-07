@@ -17,6 +17,7 @@ import { M, yRotation, resolve } from "./coords";
 import { buildWalls } from "./Walls";
 import { Floor } from "./Floor";
 import { Walls } from "./Walls";
+import { WallImages } from "./WallImages";
 import { FurnitureLayer } from "./FurnitureMesh";
 import { Icon } from "../components/Icon";
 
@@ -132,7 +133,7 @@ function WalkColliders() {
 
   const wallPieces = useMemo(() => {
     const closed = rooms.filter((r) => r.closed && r.polygon.length >= 3);
-    return closed.flatMap((r) => buildWalls(r.polygon, openings.filter((o) => o.roomId === r.id), wallHeight));
+    return closed.flatMap((r) => buildWalls(r.polygon, openings.filter((o) => o.roomId === r.id), wallHeight, r.openWalls));
   }, [rooms, openings, wallHeight]);
   const b = useMemo(() => {
     const pts = rooms.flatMap((r) => r.polygon);
@@ -177,6 +178,7 @@ function WalkScene() {
   const materials = useStore((s) => s.materials);
   const wallHeight = useStore((s) => s.wallHeight);
   const furniture = useStore((s) => s.furniture);
+  const wallImages = useStore((s) => s.wallImages);
   const closed = rooms.filter((r) => r.closed && r.polygon.length >= 3);
 
   const spawn = useMemo(() => {
@@ -194,9 +196,10 @@ function WalkScene() {
       {closed.map((r) => (
         <group key={r.id}>
           <Floor polygon={r.polygon} material={materials.floor} />
-          <Walls polygon={r.polygon} openings={openings.filter((o) => o.roomId === r.id)} wallHeightCm={wallHeight} material={materials.walls} cutaway={false} />
+          <Walls polygon={r.polygon} openings={openings.filter((o) => o.roomId === r.id)} wallHeightCm={wallHeight} material={materials.walls} cutaway={false} removed={r.openWalls} />
         </group>
       ))}
+      <WallImages rooms={closed} wallImages={wallImages} />
       <FurnitureLayer furniture={furniture} selectedId={null} accent="#3b82f6" onSelect={() => {}} />
       <Physics gravity={[0, -9.81, 0]}>
         <Player spawn={spawn} />

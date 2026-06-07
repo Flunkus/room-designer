@@ -20,7 +20,7 @@ export interface WallPiece {
   center: THREE.Vector3;
 }
 
-export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: number): WallPiece[] {
+export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: number, removed?: number[]): WallPiece[] {
   if (polygon.length < 3) return [];
   const evaluator = new Evaluator();
   evaluator.useGroups = false;
@@ -29,6 +29,7 @@ export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: n
   const pieces: WallPiece[] = [];
 
   edges(polygon).forEach((e, i) => {
+    if (removed?.includes(i)) return; // wall removed (opened) — skip it entirely
     const len = e.len;
     if (len < 1) return;
     const L = len * M;
@@ -54,7 +55,13 @@ export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: n
       brush = evaluator.evaluate(brush, cut, SUBTRACTION);
     });
 
-    const geometry = brush.geometry;
+    // Bake the slab's world transform into the geometry: the mesh below renders with
+    // no transform, but both the raw box and the CSG result are in brush-local space
+    // (the evaluator keeps the result in operand A's frame). Without this every wall
+    // collapses to the world origin, half-sunk into the floor.
+    brush.updateMatrixWorld(true);
+    const geometry = brush.geometry.clone();
+    geometry.applyMatrix4(brush.matrixWorld);
     pieces.push({
       geometry,
       normal: new THREE.Vector3(e.nx, 0, e.ny),
@@ -65,10 +72,10 @@ export function buildWalls(polygon: Vec2[], openings: Opening[], wallHeightCm: n
   return pieces;
 }
 
-export function Walls({ polygon, openings, wallHeightCm, material, cutaway = true }: {
-  polygon: Vec2[]; openings: Opening[]; wallHeightCm: number; material: Material; cutaway?: boolean;
+export function Walls({ polygon, openings, wallHeightCm, material, cutaway = true, removed }: {
+  polygon: Vec2[]; openings: Opening[]; wallHeightCm: number; material: Material; cutaway?: boolean; removed?: number[];
 }) {
-  const pieces = useMemo(() => buildWalls(polygon, openings, wallHeightCm), [polygon, openings, wallHeightCm]);
+  const pieces = useMemo(() => buildWalls(polygon, openings, wallHeightCm, removed), [polygon, openings, wallHeightCm, removed]);
   const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
 
   const mat = useMemo(() => {
