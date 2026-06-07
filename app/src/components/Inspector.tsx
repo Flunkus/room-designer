@@ -4,6 +4,7 @@ import { Icon, TYPE_ICON } from "./Icon";
 import { useStore } from "../state/store";
 import { NumField, Slider, Section, Stat, Toggle, inpStyle } from "./fields";
 import { saveFurnitureToLibrary } from "../services/library";
+import { putMesh } from "../services/meshStore";
 import { area, perimeter, shapeName } from "../domain/geometry";
 import type { Furniture, Material, MaterialKey } from "../domain/types";
 
@@ -24,6 +25,33 @@ function ObjInspector({ o }: { o: Furniture }) {
     const ok = await saveFurnitureToLibrary(o).catch(() => false);
     setSaveState(ok ? "saved" : "error");
     setTimeout(() => setSaveState("idle"), 2200);
+  };
+
+  // Replace this object's box/model with an uploaded GLB (scaled to its current W×D×H).
+  const modelInput = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [modelErr, setModelErr] = useState<string | null>(null);
+  const onModelFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setModelErr(null);
+    if (!/\.(glb|gltf)$/i.test(f.name)) { setModelErr("Please choose a .glb or .gltf file."); return; }
+    if (f.size > 75 * 1024 * 1024) { setModelErr("Model is too large (max 75 MB)."); return; }
+    setUploading(true);
+    try {
+      const bytes = await f.arrayBuffer();
+      const mime = f.name.toLowerCase().endsWith(".glb") ? "model/gltf-binary" : "model/gltf+json";
+      const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+      await putMesh(o.id, bytes, mime, f.name); // durable bytes keyed by this object's id
+      s.setFurnitureMesh(o.id, url, "ready");
+      s.patch(o.id, { meshStored: true, imageUrl: null, imageStored: false });
+    } catch (err) {
+      console.warn("[replace model] could not read file:", err);
+      setModelErr("Could not read that model file.");
+    } finally {
+      setUploading(false);
+    }
   };
   return (
     <div style={{ height: "100%", overflowY: "auto" }}>
@@ -70,14 +98,22 @@ function ObjInspector({ o }: { o: Furniture }) {
         </div>
       </Section>
 
-      {o.meshUrl && (
-        <Section title="My models">
-          <p style={{ margin: "0 0 9px", fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>Save this model at its current size so you can re-place it later without re-uploading.</p>
-          <button className="btn" style={{ width: "100%" }} disabled={saveState === "saving"}
-            onClick={onSaveToLibrary}>
-            <Icon name={saveState === "saved" ? "check" : "save"} size={15} />{" "}
-            {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved to My models" : saveState === "error" ? "Couldn't save — try again" : "Save to My models"}
+      {!o.flat && !o.imageUrl && (
+        <Section title="3D model">
+          <p style={{ margin: "0 0 9px", fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>
+            {o.meshUrl ? "Replace this object's 3D model, or save it to reuse." : "Replace this box with a 3D model (.glb/.gltf) — it's scaled to fit the current W×D×H."}
+          </p>
+          <input ref={modelInput} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" style={{ display: "none" }} onChange={onModelFile} />
+          <button className="btn" style={{ width: "100%" }} disabled={uploading} onClick={() => modelInput.current?.click()}>
+            <Icon name="upload" size={15} /> {uploading ? "Loading model…" : o.meshUrl ? "Replace 3D model" : "Upload 3D model"}
           </button>
+          {modelErr && <div style={{ marginTop: 8, fontSize: 12, color: "var(--danger)" }}>{modelErr}</div>}
+          {o.meshUrl && (
+            <button className="btn" style={{ width: "100%", marginTop: 8 }} disabled={saveState === "saving"} onClick={onSaveToLibrary}>
+              <Icon name={saveState === "saved" ? "check" : "save"} size={15} />{" "}
+              {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved to My models" : saveState === "error" ? "Couldn't save — try again" : "Save to My models"}
+            </button>
+          )}
         </Section>
       )}
 
