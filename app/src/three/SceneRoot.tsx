@@ -10,6 +10,7 @@ import { Floor } from "./Floor";
 import { Walls } from "./Walls";
 import { FurnitureLayer } from "./FurnitureMesh";
 import { ClearanceLayer } from "./ClearanceZone";
+import { WallImages } from "./WallImages";
 import { HumanProxy } from "./HumanProxy";
 import { Icon } from "../components/Icon";
 import { Slider } from "../components/fields";
@@ -91,6 +92,7 @@ export function SceneRoot({ bare }: { bare?: boolean }) {
   const materials = useStore((s) => s.materials);
   const wallHeight = useStore((s) => s.wallHeight);
   const furniture = useStore((s) => s.furniture);
+  const wallImages = useStore((s) => s.wallImages);
   const selectedId = useStore((s) => s.selectedId);
   const select = useStore((s) => s.select);
   const fov = useStore((s) => s.view3d.fov);
@@ -129,6 +131,7 @@ export function SceneRoot({ bare }: { bare?: boolean }) {
               </group>
             ))}
             <FurnitureLayer furniture={furniture} selectedId={selectedId} accent={accent} onSelect={select} />
+            <WallImages rooms={closedRooms} wallImages={wallImages} />
             {showClearance && <ClearanceLayer furniture={furniture} />}
             {showProxy && <HumanProxy proxy={proxy} accent={accent} onDragChange={setProxyDragging} />}
           </>

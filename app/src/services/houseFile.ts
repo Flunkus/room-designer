@@ -5,7 +5,7 @@
    Import writes the model bytes back into IndexedDB, loads the scene, and rehydrates. */
 import { useStore } from "../state/store";
 import { getMesh, putMesh } from "./meshStore";
-import type { Furniture, Opening, Proxy, Room, SceneState } from "../domain/types";
+import type { Furniture, Opening, Proxy, Room, SceneState, WallImage } from "../domain/types";
 
 const FORMAT = "roomscale-house";
 const ephemeral = (u?: string | null) => !!u && u.startsWith("blob:");
@@ -17,6 +17,7 @@ interface HousePayload {
   activeRoomId: string | null;
   furniture: Furniture[];
   openings: Opening[];
+  wallImages: WallImage[];
   materials: SceneState["materials"];
   wallHeight: number;
   gridSize: number;
@@ -48,6 +49,12 @@ export async function exportHouse(): Promise<void> {
     const m = await getMesh(f.id);
     if (m) meshes[f.id] = { mime: m.mime, name: m.name, bytes: abToB64(m.bytes) };
   }
+  // wall-image bytes live in the same IDB store, keyed by the wall-image id
+  for (const wi of s.wallImages) {
+    if (!wi.stored) continue;
+    const m = await getMesh(wi.id);
+    if (m) meshes[wi.id] = { mime: m.mime, name: m.name, bytes: abToB64(m.bytes) };
+  }
   const data: HouseFile = {
     format: FORMAT, version: 1, exportedAt: Date.now(),
     house: {
@@ -57,6 +64,7 @@ export async function exportHouse(): Promise<void> {
       // drop session blob URLs — the bytes travel in `meshes` and rehydrate on import
       furniture: s.furniture.map((f) => ({ ...f, meshUrl: f.meshStored || ephemeral(f.meshUrl) ? null : f.meshUrl })),
       openings: s.openings,
+      wallImages: s.wallImages.map((w) => ({ ...w, url: w.stored || ephemeral(w.url) ? null : w.url })),
       materials: s.materials,
       wallHeight: s.wallHeight,
       gridSize: s.gridSize,
@@ -93,6 +101,7 @@ export async function importHouse(file: File): Promise<void> {
     activeRoomId: h.activeRoomId ?? (h.rooms?.[0]?.id ?? null),
     furniture: (h.furniture ?? []).map((f) => ({ ...f, meshUrl: f.meshStored || ephemeral(f.meshUrl) ? null : f.meshUrl })),
     openings: h.openings ?? [],
+    wallImages: (h.wallImages ?? []).map((w) => ({ ...w, url: w.stored || ephemeral(w.url) ? null : w.url })),
     materials: h.materials ?? cur.materials,
     wallHeight: h.wallHeight ?? cur.wallHeight,
     gridSize: h.gridSize ?? cur.gridSize,

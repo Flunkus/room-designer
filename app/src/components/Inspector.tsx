@@ -181,6 +181,34 @@ function RoomInspector() {
         </div>
       </Section>
 
+      <Section title="Wall images">
+        <p style={{ margin: "0 0 9px", fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>Apply a photo to a wall — a window view, mural or artwork. Click below, then click the wall on the plan.</p>
+        <button className="btn sm" style={{ width: "100%" }} onClick={() => { s.setPendingWallImage(true); s.setMode("2d"); }}>
+          <Icon name="image" size={14} /> Add image to a wall
+        </button>
+        {s.pendingWallImage && <div style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: "var(--accent-600)" }}>Now click a wall on the plan…</div>}
+        {s.wallImages.filter((w) => w.roomId === activeRoom.id).map((wi) => (
+          <div key={wi.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginTop: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              {wi.url && <div style={{ width: 36, height: 27, borderRadius: 4, background: `var(--panel-3) url(${wi.url}) center/cover`, border: "1px solid var(--border-strong)", flexShrink: 0 }} />}
+              <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{wi.name || "Image"}</div>
+              <button className="icon-btn" style={{ width: 24, height: 24, color: "var(--danger)", flexShrink: 0 }} title="Remove image" onClick={() => s.removeWallImage(wi.id)}><Icon name="trash" size={13} /></button>
+            </div>
+            <select value={wi.wall} onChange={(e) => s.patchWallImage(wi.id, { wall: Number(e.target.value) })} style={{ ...inpStyle, padding: "0 8px", marginBottom: 8 }}>
+              {poly.map((_, i) => <option key={i} value={i}>Wall {i + 1}</option>)}
+            </select>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <NumField label="W" value={wi.width} unit="cm" onChange={(v) => s.patchWallImage(wi.id, { width: Math.max(10, v) })} />
+              <NumField label="H" value={wi.height} unit="cm" onChange={(v) => s.patchWallImage(wi.id, { height: Math.max(10, v) })} />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <NumField label="Along" value={wi.offset} unit="cm" onChange={(v) => s.patchWallImage(wi.id, { offset: Math.max(0, v) })} />
+              <NumField label="Sill" value={wi.sill} unit="cm" onChange={(v) => s.patchWallImage(wi.id, { sill: Math.max(0, v) })} />
+            </div>
+          </div>
+        ))}
+      </Section>
+
       <Section title="Verification">
         <Toggle label="Clearance zones" sub="60 cm walking border" on={s.showClearance} onClick={() => s.toggle("showClearance")} />
         <Toggle label="Human proxy" sub={`${s.proxy.w ?? 60} × ${s.proxy.d ?? 40} × ${s.proxy.h ?? 180} cm dummy`} on={s.showProxy} onClick={() => s.toggle("showProxy")} />

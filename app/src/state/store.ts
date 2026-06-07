@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
   Furniture, InspectorTab, MaterialKey, ModalKind, Opening, Proxy,
-  Room, SceneState, Tool, Vec2, View2D, View3D, ViewMode,
+  Room, SceneState, Tool, Vec2, View2D, View3D, ViewMode, WallImage,
 } from "../domain/types";
 import { bounds, centroid, pointInPoly } from "../domain/geometry";
 import { uid } from "../domain/util";
@@ -28,6 +28,10 @@ export interface RoomState {
   activeRoomId: string | null;
   furniture: Furniture[];
   openings: Opening[];
+  /** 2D images applied to wall faces (windows / outdoor views / artwork). */
+  wallImages: WallImage[];
+  /** one-shot: the next wall clicked on the plan receives an uploaded image. */
+  pendingWallImage: boolean;
   materials: SceneState["materials"];
   wallHeight: number;
 
@@ -102,6 +106,11 @@ export interface RoomState {
   addOpening: (o: Omit<Opening, "id">) => void;
   patchOpening: (id: string, p: Partial<Opening>) => void;
   removeOpening: (id: string) => void;
+  // wall images (2D image panels on walls)
+  addWallImage: (img: Omit<WallImage, "id">) => string;
+  patchWallImage: (id: string, p: Partial<WallImage>) => void;
+  removeWallImage: (id: string) => void;
+  setPendingWallImage: (v: boolean) => void;
 }
 
 /** session-scoped URLs (blob:) don't survive reload; data: URLs do. */
@@ -114,6 +123,11 @@ function sanitizeFurniture(o: Furniture): Furniture {
   // drop in-flight generation state and dead blob meshes back to a stable box
   const status: Furniture["status"] = o.status === "generating" ? "ready" : o.status;
   return { ...o, meshUrl, status };
+}
+
+function sanitizeWallImages(list: WallImage[]): WallImage[] {
+  // drop the session blob URL; the bytes live in IndexedDB and rehydrate on load
+  return list.map((w) => ({ ...w, url: w.stored || isEphemeral(w.url) ? null : w.url }));
 }
 
 function sanitizeMaterials(m: RoomState["materials"]): RoomState["materials"] {
@@ -175,6 +189,8 @@ export const useStore = create<RoomState>()(
       activeRoomId: demo.rooms[0]?.id ?? null,
       furniture: demo.furniture,
       openings: demo.openings,
+      wallImages: [],
+      pendingWallImage: false,
       materials: demo.materials,
       wallHeight: demo.wallHeight,
 
@@ -297,10 +313,12 @@ export const useStore = create<RoomState>()(
 
       removeRoom: (id) => set((s) => {
         const rooms = s.rooms.filter((r) => r.id !== id);
+        for (const wi of s.wallImages) if (wi.roomId === id && wi.stored) void deleteMesh(wi.id);
         return {
           rooms,
           furniture: s.furniture.filter((f) => f.roomId !== id),
           openings: s.openings.filter((op) => op.roomId !== id),
+          wallImages: s.wallImages.filter((w) => w.roomId !== id),
           activeRoomId: s.activeRoomId === id ? (rooms[0]?.id ?? null) : s.activeRoomId,
           selectedId: null, inspectorTab: "room", fitTick: s.fitTick + 1,
         };
@@ -311,7 +329,7 @@ export const useStore = create<RoomState>()(
         const e = makeEmptyScene();
         set({
           houseName: "My House",
-          rooms: e.rooms, furniture: e.furniture, openings: e.openings, materials: e.materials,
+          rooms: e.rooms, furniture: e.furniture, openings: e.openings, wallImages: [], pendingWallImage: false, materials: e.materials,
           wallHeight: e.wallHeight, drafting: true, draftPoints: [], draftRoomId: null, tool: "draw", mode: "2d",
           selectedId: null, activeRoomId: null, inspectorTab: "room", showClearance: false, showProxy: false,
         });
@@ -320,7 +338,7 @@ export const useStore = create<RoomState>()(
       resetHouse: () => {
         const d = makeDemoScene();
         set((s) => ({
-          rooms: d.rooms, furniture: d.furniture, openings: d.openings, materials: d.materials,
+          rooms: d.rooms, furniture: d.furniture, openings: d.openings, wallImages: [], pendingWallImage: false, materials: d.materials,
           wallHeight: d.wallHeight, drafting: false, tool: "select", draftPoints: [], draftRoomId: null,
           selectedId: null, activeRoomId: d.rooms[0]?.id ?? null, inspectorTab: "room", fitTick: s.fitTick + 1,
         }));
@@ -425,11 +443,29 @@ export const useStore = create<RoomState>()(
           if (!o.meshStored || o.meshUrl) continue;
           void meshObjectUrl(o.id).then((url) => { if (url) get().setFurnitureMesh(o.id, url, "ready"); });
         }
+        // rebuild blob URLs for wall images whose bytes live in IndexedDB
+        for (const wi of get().wallImages) {
+          if (!wi.stored || wi.url) continue;
+          void meshObjectUrl(wi.id).then((url) => { if (url) get().patchWallImage(wi.id, { url }); });
+        }
       },
 
       addOpening: (o) => set((s) => ({ openings: [...s.openings, { ...o, id: uid("op") }] })),
       patchOpening: (id, p) => set((s) => ({ openings: s.openings.map((op) => (op.id === id ? { ...op, ...p } : op)) })),
       removeOpening: (id) => set((s) => ({ openings: s.openings.filter((op) => op.id !== id) })),
+
+      addWallImage: (img) => {
+        const id = uid("wi");
+        set((s) => ({ wallImages: [...s.wallImages, { ...img, id }], pendingWallImage: false }));
+        return id;
+      },
+      patchWallImage: (id, p) => set((s) => ({ wallImages: s.wallImages.map((w) => (w.id === id ? { ...w, ...p } : w)) })),
+      removeWallImage: (id) => set((s) => {
+        const wi = s.wallImages.find((w) => w.id === id);
+        if (wi?.stored) void deleteMesh(id); // drop its bytes from IndexedDB
+        return { wallImages: s.wallImages.filter((w) => w.id !== id) };
+      }),
+      setPendingWallImage: (v) => set({ pendingWallImage: v }),
     }),
     {
       name: "roomscale.scene.v1",
@@ -443,6 +479,7 @@ export const useStore = create<RoomState>()(
         activeRoomId: s.activeRoomId,
         furniture: s.furniture.map(sanitizeFurniture),
         openings: s.openings,
+        wallImages: sanitizeWallImages(s.wallImages),
         materials: sanitizeMaterials(s.materials),
         wallHeight: s.wallHeight,
         gridSize: s.gridSize,

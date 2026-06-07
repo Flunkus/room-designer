@@ -5,6 +5,7 @@ import { useStore } from "../state/store";
 import { area, bounds, centroid, dist, edges, shade } from "../domain/geometry";
 import { effExtent, resolveProxy, proxyHalf, type Boxish } from "../domain/proxy";
 import { topDownImage } from "../services/topdown";
+import { putMesh } from "../services/meshStore";
 import type { GridStyle } from "../components/Tweaks";
 import type { Vec2 } from "../domain/types";
 
@@ -89,6 +90,30 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
   }, []);
   const wantsPan = (e: React.PointerEvent | PointerEvent) => spaceRef.current || (e as PointerEvent).button === 1;
   const movedRef = useRef(false);
+
+  // ---- wall images: pick a wall, then upload an image to apply to it ----
+  const wallImgInput = useRef<HTMLInputElement>(null);
+  const pendingImgTarget = useRef<{ roomId: string; wall: number } | null>(null);
+  const onWallImageFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    const tgt = pendingImgTarget.current;
+    pendingImgTarget.current = null;
+    s.setPendingWallImage(false);
+    if (!f || !tgt || !f.type.startsWith("image/")) return;
+    const room = s.rooms.find((r) => r.id === tgt.roomId);
+    if (!room) return;
+    const edge = edges(room.polygon)[tgt.wall];
+    const edgeLen = edge?.len ?? 200;
+    const width = Math.min(160, Math.max(40, edgeLen - 20));
+    const offset = Math.max(0, Math.round((edgeLen - width) / 2));
+    const url = URL.createObjectURL(f);
+    const id = s.addWallImage({ roomId: tgt.roomId, wall: tgt.wall, offset, sill: 80, width: Math.round(width), height: Math.round(width * 0.8), url, name: f.name });
+    try {
+      await putMesh(id, await f.arrayBuffer(), f.type || "image/png", f.name);
+      s.patchWallImage(id, { stored: true });
+    } catch (err) { console.warn("[wallImage] could not persist", err); }
+  };
 
   // ---- draw-mode keys: Esc cancels, Enter closes the loop ----
   useEffect(() => {
@@ -305,12 +330,39 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
                       onPointerEnter={() => setHoverWall({ room: room.id, i })}
                       onPointerLeave={() => setHoverWall((h) => (h?.room === room.id && h?.i === i ? null : h))}
                       onPointerDown={(ev) => { if (spaceRef.current || ev.button === 1) return; ev.stopPropagation(); }}
-                      onClick={(ev) => { if (movedRef.current) return; ev.stopPropagation(); s.toggleWall(room.id, i); }}>
-                      <title>{removed ? "Click to restore this wall" : "Click to remove this wall (open the space)"}</title>
+                      onClick={(ev) => {
+                        if (movedRef.current) return;
+                        ev.stopPropagation();
+                        if (s.pendingWallImage) { pendingImgTarget.current = { roomId: room.id, wall: i }; wallImgInput.current?.click(); }
+                        else s.toggleWall(room.id, i);
+                      }}>
+                      <title>{s.pendingWallImage ? "Click to place your image on this wall" : removed ? "Click to restore this wall" : "Click to remove this wall (open the space)"}</title>
                     </line>
                   </g>
                 );
               });
+            })}
+
+            {/* wall image panels — marker along the wall where the image sits */}
+            {hasAnyRoom && s.wallImages.map((wi) => {
+              const room = s.rooms.find((r) => r.id === wi.roomId);
+              if (!room || room.polygon.length < 3) return null;
+              const e = edges(room.polygon)[wi.wall];
+              if (!e) return null;
+              const len = e.len || 1, ux = (e.b.x - e.a.x) / len, uy = (e.b.y - e.a.y) / len;
+              const ax = e.a.x + ux * wi.offset, ay = e.a.y + uy * wi.offset;
+              const bx = e.a.x + ux * (wi.offset + wi.width), by = e.a.y + uy * (wi.offset + wi.width);
+              const mx = (ax + bx) / 2 + e.nx * (11 / view.zoom), my = (ay + by) / 2 + e.ny * (11 / view.zoom);
+              return (
+                <g key={"wi" + wi.id} style={{ pointerEvents: "none" }}>
+                  <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#10b981" strokeWidth={5 / view.zoom} strokeLinecap="round" />
+                  <g transform={`translate(${mx} ${my}) scale(${1 / view.zoom})`}>
+                    <foreignObject x={-9} y={-9} width={18} height={18}>
+                      <div style={{ color: "#10b981", display: "flex", alignItems: "center", justifyContent: "center", width: 18, height: 18 }}><Icon name="image" size={13} /></div>
+                    </foreignObject>
+                  </g>
+                </g>
+              );
             })}
 
             {/* clearance zones */}
@@ -448,6 +500,16 @@ export function Canvas2D({ accent, gridStyle }: { accent: string; gridStyle: Gri
           <button className="btn ghost sm" style={hintBtn} onClick={(e) => { e.stopPropagation(); s.cancelDraw(); }}>Cancel</button>
         </div>
       )}
+
+      {/* wall-image placement hint */}
+      {s.pendingWallImage && !drawing && (
+        <div className="draw-hint" style={hintStyle} onPointerDown={(e) => e.stopPropagation()}>
+          <Icon name="image" size={15} />
+          <span>Click a wall to place your image on it</span>
+          <button className="btn ghost sm" style={hintBtn} onClick={(e) => { e.stopPropagation(); s.setPendingWallImage(false); }}>Cancel</button>
+        </div>
+      )}
+      <input ref={wallImgInput} type="file" accept="image/*" style={{ display: "none" }} onChange={onWallImageFile} />
     </div>
   );
 }

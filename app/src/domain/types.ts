@@ -62,6 +62,26 @@ export interface Opening {
   label?: string;
 }
 
+/** A 2D image applied to a wall face (a window view, mural, artwork…). Positioned on a
+    room's wall like an opening: edge index + offset along the wall + sill, sized w×h (cm). */
+export interface WallImage {
+  id: string;
+  roomId: string;
+  /** index into the room polygon's edge list */
+  wall: number;
+  /** distance (cm) along the wall from the edge's start vertex to the panel's near side */
+  offset: number;
+  /** height (cm) of the panel's bottom above the floor */
+  sill: number;
+  width: number;
+  height: number;
+  /** session image URL (object URL); rehydrated from IndexedDB bytes on load */
+  url?: string | null;
+  /** image bytes live in IndexedDB keyed by this id (durable across reload) */
+  stored?: boolean;
+  name?: string;
+}
+
 export type MaterialSource = "ai" | "pbr" | "swatch";
 
 /** A unified PBR material for walls/floors. */
